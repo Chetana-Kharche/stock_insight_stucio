@@ -1,4 +1,4 @@
-"""History: fetch runs, analysis reports, and querying the structured fact table."""
+"""Fetch history, analysis history and the stored-data explorer (shown inside the Notebook tab)."""
 from __future__ import annotations
 
 import pandas as pd
@@ -8,24 +8,16 @@ from core import db
 from core import repository as repo
 from ui import charts_ui
 from ui import components as C
-from ui.dashboard_view import load_report_into_state, load_run_into_state
 
 SECTIONS = ["quarters", "profit-loss", "balance-sheet", "cash-flow", "ratios", "shareholding-quarterly",
             "shareholding-yearly", "growth"]
 
 
-def _go_dashboard() -> None:
-    st.session_state["nav_request"] = "Dashboard"  # applied before the sidebar radio is created
-    st.rerun()
+def render(user_filter=None, tabs=None) -> None:
+    """tabs: the three st.tabs containers to draw into (fetch history, analysis history, query)."""
+    from ui.company_view import open_report, open_run
 
-
-def render() -> None:
-    uid = (st.session_state.get("user") or {}).get("id")
-    st.caption("Every fetch and every report is kept. Reopen any of them, or query the stored numbers directly.")
-    everyone = st.toggle("Show history of all users", value=False)
-    user_filter = None if everyone else uid
-    C.spacer(4)
-    t1, t2, t3 = st.tabs(["Data fetch history", "Analysis history", "Query stored data"])
+    t1, t2, t3 = tabs or st.tabs(["Data fetch history", "Analysis history", "Query stored data"])
 
     with t1:
         C.section("Data fetch history", "Each row is one Screener capture saved in scrape_runs")
@@ -47,9 +39,9 @@ def render() -> None:
                 with c1:
                     rid = st.selectbox("Open a stored capture", list(opts), format_func=opts.get, key="hist_run")
                 with c2:
-                    if st.button("Open in dashboard", key="open_run", use_container_width=True):
-                        load_run_into_state(rid)
-                        _go_dashboard()
+                    if st.button("Open company page", key="open_run", use_container_width=True):
+                        open_run(rid)
+                        st.rerun()
 
     with t2:
         C.section("Analysis history", "Every generated report, with its stance and score", color="green")
@@ -68,9 +60,9 @@ def render() -> None:
             with c1:
                 rid = st.selectbox("Open a report", list(opts), format_func=opts.get, key="hist_rep")
             with c2:
-                if st.button("Open in dashboard", key="open_rep", use_container_width=True):
-                    load_report_into_state(rid)
-                    _go_dashboard()
+                if st.button("Open report", key="open_rep", use_container_width=True):
+                    open_report(rid)
+                    st.rerun()
 
     with t3:
         C.section("Query stored data", "Explore the structured financial_facts table")
@@ -105,7 +97,7 @@ def render() -> None:
                             use_container_width=True)
         st.download_button("Download these rows (CSV)", sub.to_csv(index=False).encode(),
                            file_name=f"facts_{cid}_{section}.csv", mime="text/csv")
-        with st.expander("Example SQL you can run in Supabase"):
+        with st.expander("Example SQL you can run in the Supabase SQL Editor"):
             st.code("""-- Net profit of every stored company, latest capture, by quarter
 select nse_symbol, company_name, period_label, value
 from v_latest_facts

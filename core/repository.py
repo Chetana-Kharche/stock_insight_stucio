@@ -321,10 +321,13 @@ def upsert_news(company_id: int, items: list[dict]) -> None:
          for n in items])
 
 
-def list_news(company_id: int, limit: int = 20) -> list[dict]:
+def list_news(company_id: int, limit: int = 400, per_source: int = 15) -> list[dict]:
+    """Latest stored headlines, at most `per_source` from each website so no website crowds out the others."""
     return db.fetch_all(
-        """select title, url, source, published_at, summary from news_items where company_id=%s
-           order by published_at desc nulls last limit %s""", (company_id, limit))
+        """select title, url, source, published_at, summary from (
+               select n.*, row_number() over (partition by coalesce(source, '') order by published_at desc nulls last) rn
+               from news_items n where company_id=%s) x
+           where rn <= %s order by published_at desc nulls last limit %s""", (company_id, per_source, limit))
 
 
 # =====================================================================
@@ -393,3 +396,187 @@ def companies_needing_rag_sync() -> list[dict]:
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
+
+
+# =====================================================================
+# v2: profile, notebook, watchlist, portfolio, data from other websites
+# =====================================================================
+
+def get_profile(user_id: str) -> Optional[dict]:
+    return db.fetch_one("select * from profiles where id = %s", (user_id,))
+
+
+def update_profile_name(user_id: str, full_name: str) -> None:
+    name = full_name.strip() or None
+    db.execute("update profiles set full_name = %s where id = %s", (name, user_id))
+
+
+def user_stats(user_id: str) -> dict:
+    row = db.fetch_one(
+        """select
+             (select count(*) from scrape_runs where user_id = %(u)s and status = 'success') as fetches,
+             (select count(distinct company_id) from scrape_runs where user_id = %(u)s and status = 'success') as companies,
+             (select count(*) from analysis_reports where user_id = %(u)s) as reports,
+             (select count(*) from user_notes where user_id = %(u)s and note_type <> 'activity') as notes,
+             (select count(*) from watchlist where user_id = %(u)s) as watchlist,
+             (select count(*) from portfolio_holdings where user_id = %(u)s) as holdings""", {"u": user_id})
+    return {k: int(v or 0) for k, v in (row or {}).items()}
+
+
+# ---------- notebook ----------
+NOTE_TYPES = ("text", "outlook", "action", "activity")
+
+
+def add_note(user_id: str, company_id: Optional[int], content: str, note_type: str = "text") -> None:
+    if note_type not in NOTE_TYPES:
+        note_type = "text"
+    db.execute("insert into user_notes (user_id, company_id, note_type, content) values (%s,%s,%s,%s)",
+               (user_id, company_id, note_type, content.strip()[:4000]))
+
+
+def log_activity(user_id: Optional[str], company_id: Optional[int], content: str) -> None:
+    """Automatic notebook entry (fetch, report, watchlist ...). Never breaks the caller."""
+    if not user_id:
+        return
+    try:
+        add_note(user_id, company_id, content, "activity")
+    except Exception:  # noqa: BLE001 - e.g. tables not created yet
+        pass
+
+
+def list_notes(user_id: str, note_type: Optional[str] = None, company_id: Optional[int] = None,
+               search: str = "", limit: int = 500) -> list[dict]:
+    where, params = ["n.user_id = %s"], [user_id]
+    if note_type:
+        where.append("n.note_type = %s")
+        params.append(note_type)
+    if company_id:
+        where.append("n.company_id = %s")
+        params.append(company_id)
+    if search.strip():
+        where.append("(n.content ilike %s or c.name ilike %s or c.nse_symbol ilike %s)")
+        params += [f"%{search.strip()}%"] * 3
+    params.append(limit)
+    return db.fetch_all(
+        f"""select n.id, n.note_type, n.content, n.created_at, n.company_id, c.name as company_name, c.nse_symbol
+            from user_notes n left join companies c on c.id = n.company_id
+            where {' and '.join(where)} order by n.created_at desc limit %s""", params)
+
+
+def delete_note(user_id: str, note_id: int) -> None:
+    db.execute("delete from user_notes where id = %s and user_id = %s", (note_id, user_id))
+
+
+def recent_companies(user_id: str, limit: int = 8) -> list[dict]:
+    """Companies this user fetched most recently (for quick re-open)."""
+    return db.fetch_all(
+        """select c.id, c.name, c.nse_symbol, max(r.started_at) as last_seen
+           from scrape_runs r join companies c on c.id = r.company_id
+           where r.user_id = %s and r.status = 'success'
+           group by c.id, c.name, c.nse_symbol order by last_seen desc limit %s""", (user_id, limit))
+
+
+# ---------- watchlist ----------
+def is_in_watchlist(user_id: str, company_id: int) -> bool:
+    return db.fetch_one("select 1 from watchlist where user_id=%s and company_id=%s", (user_id, company_id)) is not None
+
+
+def add_to_watchlist(user_id: str, company_id: int) -> None:
+    db.execute("insert into watchlist (user_id, company_id) values (%s,%s) on conflict do nothing",
+               (user_id, company_id))
+
+
+def remove_from_watchlist(user_id: str, company_id: int) -> None:
+    db.execute("delete from watchlist where user_id=%s and company_id=%s", (user_id, company_id))
+
+
+def list_watchlist(user_id: str) -> list[dict]:
+    return db.fetch_all(
+        """select w.company_id, w.added_at, c.name, c.nse_symbol, c.bse_code, c.industry
+           from watchlist w join companies c on c.id = w.company_id
+           where w.user_id = %s order by w.added_at desc""", (user_id,))
+
+
+# ---------- portfolio ----------
+def add_holding(user_id: str, company_id: int, quantity: float, avg_price: float, buy_date=None) -> None:
+    db.execute("""insert into portfolio_holdings (user_id, company_id, quantity, avg_price, buy_date)
+                  values (%s,%s,%s,%s,%s)""", (user_id, company_id, quantity, avg_price, buy_date))
+
+
+def delete_holding(user_id: str, holding_id: int) -> None:
+    db.execute("delete from portfolio_holdings where id=%s and user_id=%s", (holding_id, user_id))
+
+
+def list_holdings(user_id: str) -> list[dict]:
+    return db.fetch_all(
+        """select h.id, h.company_id, h.quantity, h.avg_price, h.buy_date, h.created_at,
+                  c.name, c.nse_symbol, c.bse_code, c.industry
+           from portfolio_holdings h join companies c on c.id = h.company_id
+           where h.user_id = %s order by c.name, h.buy_date""", (user_id,))
+
+
+def last_closes(company_ids: list[int]) -> dict[int, dict]:
+    """Latest two Screener closing prices per company: {id: {close, prev_close, trade_date}}."""
+    if not company_ids:
+        return {}
+    rows = db.fetch_all(
+        """select company_id, trade_date, close from (
+             select company_id, trade_date, close,
+                    row_number() over (partition by company_id order by trade_date desc) as rn
+             from price_history where company_id = any(%s) and close is not null) t
+           where rn <= 2 order by company_id, trade_date desc""", (list(company_ids),))
+    out: dict[int, dict] = {}
+    for r in rows:
+        d = out.setdefault(r["company_id"], {})
+        if "close" not in d:
+            d.update(close=float(r["close"]), trade_date=r["trade_date"])
+        else:
+            d["prev_close"] = float(r["close"])
+    return out
+
+
+def companies_by_symbols(symbols: list[str]) -> dict[str, dict]:
+    if not symbols:
+        return {}
+    rows = db.fetch_all("select id, name, nse_symbol from companies where nse_symbol = any(%s)",
+                        ([s.upper() for s in symbols],))
+    return {r["nse_symbol"]: r for r in rows}
+
+
+# ---------- data from other websites (cache) ----------
+def save_external(company_id: int, data: dict) -> None:
+    db.execute("insert into external_data (company_id, data) values (%s,%s)", (company_id, db.jsonb(data)))
+
+
+def latest_external(company_id: int, max_age_hours: Optional[float] = None) -> Optional[dict]:
+    if max_age_hours is None:
+        row = db.fetch_one("select data, fetched_at from external_data where company_id=%s "
+                           "order by fetched_at desc limit 1", (company_id,))
+    else:
+        row = db.fetch_one("select data, fetched_at from external_data where company_id=%s "
+                           "and fetched_at > now() - make_interval(secs => %s) order by fetched_at desc limit 1",
+                           (company_id, float(max_age_hours) * 3600))
+    if not row:
+        return None
+    data = row["data"] or {}
+    data["cached_at"] = str(row["fetched_at"])
+    return data
+
+
+# =====================================================================
+# Pages of a company on other websites
+# =====================================================================
+
+def get_link(company_id: int, site: str) -> Optional[str]:
+    row = db.fetch_one("select url from company_links where company_id = %s and site = %s", (company_id, site))
+    return row["url"] if row else None
+
+
+def save_link(company_id: int, site: str, url: str, found_by: str = "search") -> None:
+    db.execute("""insert into company_links (company_id, site, url, found_by) values (%s, %s, %s, %s)
+                  on conflict (company_id, site) do update set url = excluded.url, found_by = excluded.found_by,
+                  found_at = now()""", (company_id, site, url, found_by))
+
+
+def delete_link(company_id: int, site: str) -> None:
+    db.execute("delete from company_links where company_id = %s and site = %s", (company_id, site))

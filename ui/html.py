@@ -80,13 +80,14 @@ def section_card(sec: dict, key: str, basis: str, show_breakdowns: bool) -> str:
 
 
 def growth_tables(growth: list[dict]) -> str:
+    """Screener's four compounded-growth boxes, shown two per row."""
     blocks = []
     for g in growth:
         rows = "".join(f"<tr><td>{e(it['period'])}</td><td>{e(it['value_text'])}</td></tr>" for it in g["rows"])
-        blocks.append(f"""<div><div class="sis-sub" style="font-weight:700;text-transform:uppercase">{e(g['title'])}</div>
-            <div class="sis-tablewrap"><table class="sis-table"><thead><tr><th>Metric</th><th>Value</th></tr></thead>
-            <tbody>{rows}</tbody></table></div></div>""")
-    return f'<div class="sis-grid" style="grid-template-columns:repeat(4,minmax(0,1fr))">{"".join(blocks)}</div>'
+        blocks.append(f"""<div class="vr-growth"><div class="h">{e(g['title'])}</div>
+            <table class="sis-table compact"><thead><tr><th>Period</th><th>Value</th></tr></thead>
+            <tbody>{rows}</tbody></table></div>""")
+    return f'<div class="vr-growth-grid">{"".join(blocks)}</div>'
 
 
 def peers_card(peers: dict, meta: dict) -> str:
@@ -170,12 +171,13 @@ def supplementary_table(items: list[dict], last_header: str = "Why it matters / 
         if "analysts" in it:
             last = f"{it['analysts']} analysts" if it.get("analysts") else "analyst consensus"
         else:
-            how = "read by yfinance library" if it.get("via") == "yfinance" else (
-                "found by AI search" + ("" if it.get("seen_in_search") else ", page not confirmed"))
+            how = {"yfinance": "read by yfinance library", "NSE API": "read from NSE's official quote data",
+                   "Value Research page": "read from its stock page"}.get(
+                it.get("via")) or ("found by AI search" + ("" if it.get("seen_in_search") else ", page not confirmed"))
             last = "; ".join(x for x in [it.get("why"), how] if x)
         body.append(f'<tr><td>{e(it["metric"])}</td><td class="val">{e(it["value"])}</td>'
                     f'<td>{e(it.get("period") or "–")}</td>'
-                    f'<td><a class="sis-src" href="{e(it.get("url") or "#")}" target="_blank">{e(it["source"])} ↗</a></td>'
+                    f'<td><a class="sis-src" href="{e(it.get("url") or "#")}" target="_blank">{e(it.get("source") or "source")} ↗</a></td>'
                     f'<td>{e(last)}</td></tr>')
     return (f'<div class="sis-tablewrap"><table class="sis-table wrap"><thead><tr>{head}</tr></thead>'
             f'<tbody>{"".join(body)}</tbody></table></div>')
@@ -185,3 +187,89 @@ def source_links(links: list[dict]) -> str:
     items = "".join(f'<li><a href="{e(l["url"])}" target="_blank">{e(l["site"])} ↗</a> '
                     f'<span class="d">{e(l.get("note", ""))}</span></li>' for l in links)
     return f'<div class="sis-card sis-doc"><h4>Connected websites</h4><ul>{items}</ul></div>'
+
+
+# =====================================================================
+# v2 builders (Value Research colours, Screener-like layout)
+# =====================================================================
+def fmt_money(v, nd: int = 2) -> str:
+    from core.utils import fmt_num
+
+    return "–" if v is None else f"₹{fmt_num(v, nd)}"
+
+
+def company_header(payload: dict, company: dict, closes: dict | None = None) -> str:
+    """Big company header: name, last price and change, BSE/NSE/website links, capture info."""
+    m = payload.get("meta", {}) if payload else {}
+    name = m.get("name") or company.get("name")
+    price_html = ""
+    c = closes or {}
+    if c.get("close") is not None:
+        chg = ""
+        if c.get("prev_close"):
+            pct = (c["close"] / c["prev_close"] - 1) * 100
+            chg = f'<span class="chg {"up" if pct >= 0 else "dn"}">{"▲" if pct >= 0 else "▼"} {abs(pct):.2f}%</span>'
+        d = c.get("trade_date")
+        try:
+            d = datetime.fromisoformat(str(d)[:10]).strftime("%d %b")
+        except (TypeError, ValueError):
+            pass
+        price_html = (f'<div><span class="px">{e(fmt_money(c["close"], 2))}</span>{chg}'
+                      f'<div class="asof">{e(d)} · close price (Screener)</div></div>')
+    sym = m.get("nse_symbol") or company.get("nse_symbol")
+    bse = m.get("bse_code") or company.get("bse_code")
+    links = []
+    if m.get("website"):
+        site = str(m["website"]).replace("https://", "").replace("http://", "").strip("/")
+        links.append(f'<a href="{e(m["website"])}" target="_blank">🔗 {e(site)}</a>')
+    if bse:
+        links.append(f'<span class="plain">BSE: {e(bse)}</span>')
+    if sym:
+        links.append(f'<a href="https://www.nseindia.com/get-quotes/equity?symbol={e(sym)}" target="_blank">NSE: {e(sym)} ↗</a>')
+    if m.get("source_url"):
+        links.append(f'<a href="{e(m["source_url"])}" target="_blank">Screener page ↗</a>')
+    inds = "".join(f'<span class="ind">{e(x)}</span>' for x in [m.get("broad_industry"), m.get("industry")] if x)
+    captured = m.get("captured_at", "")
+    try:
+        captured = datetime.fromisoformat(captured).strftime("%d %b %Y, %I:%M %p UTC")
+    except (TypeError, ValueError):
+        pass
+    meta = (f'Screener data captured {e(captured)} · {e(m.get("basis", ""))} · latest period {e(m.get("latest_period") or "–")}'
+            + (f' · next results {e(m["upcoming_result_date"])}' if m.get("upcoming_result_date") else "")) if m else \
+        "No Screener data stored yet for this company."
+    return f"""<div class="vr-co"><div class="row1"><span class="nm">{e(name)}</span>{price_html}</div>
+      <div class="links">{''.join(links)}</div>
+      <div class="meta">{inds}{meta}</div></div>"""
+
+
+def ratio_box(payload: dict) -> str:
+    """Screener's top ratio box: name on the left, value on the right, three per row."""
+    cells = []
+    for r in payload.get("summary_ratios", []):
+        cells.append(f'<div class="c"><span class="n">{e(r["name"])}</span><span class="v">{e(r["value_text"])}</span></div>')
+    rem = (-len(cells)) % 3
+    cells += ['<div class="c"></div>'] * rem
+    return f'<div class="vr-ratios">{"".join(cells)}</div>'
+
+
+def pct_cell(v) -> str:
+    if v is None:
+        return "<td>–</td>"
+    return f'<td class="{"up" if v >= 0 else "dn"}">{v:+.2f}%</td>'
+
+
+def generic_table(columns: list[str], rows: list[list[str]], raw_html_cols: tuple[int, ...] = (),
+                  cls: str = "") -> str:
+    """rows are lists of display strings; columns listed in raw_html_cols are inserted as HTML (already safe)."""
+    head = "".join(f"<th>{e(c)}</th>" for c in columns)
+    body = []
+    for r in rows:
+        tds = []
+        for i, v in enumerate(r):
+            if i in raw_html_cols:
+                tds.append(v if str(v).startswith("<td") else f"<td>{v}</td>")
+            else:
+                tds.append(f"<td>{e(v) if v not in ('', None) else '–'}</td>")
+        body.append("<tr>" + "".join(tds) + "</tr>")
+    return (f'<div class="sis-tablewrap"><table class="sis-table {cls}"><thead><tr>{head}</tr></thead>'
+            f'<tbody>{"".join(body)}</tbody></table></div>')

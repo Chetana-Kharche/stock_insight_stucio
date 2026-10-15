@@ -82,6 +82,24 @@ def send_password_reset(email: str) -> None:
         raise AuthError(_friendly(e)) from e
 
 
+def change_password(email: str, current_password: str, new_password: str) -> None:
+    """Re-check the current password, then set the new one (Supabase Auth)."""
+    client = _supabase()
+    try:
+        client.auth.sign_in_with_password({"email": email, "password": current_password})
+    except Exception as e:  # noqa: BLE001
+        raise AuthError("Current password is incorrect.") from e
+    try:
+        client.auth.update_user({"password": new_password})
+    except Exception as e:  # noqa: BLE001
+        raise AuthError(_friendly(e)) from e
+    finally:
+        try:
+            client.auth.sign_out()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def sign_out() -> None:
     try:
         _supabase().auth.sign_out()

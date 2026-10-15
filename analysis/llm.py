@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any, Optional
 
 from core.config import get_settings
@@ -28,8 +29,88 @@ def _get_client():
     return _client
 
 
+_last_model: Optional[str] = None
+RETRYABLE = ("503", "429", "500", "unavailable", "overloaded", "high demand", "resource_exhausted",
+             "deadline", "timed out", "internal")
+
+
 def model_name() -> str:
-    return get_settings().gemini_model
+    """The model that answered the last call (the main model, or the fallback if it was needed)."""
+    return _last_model or _auto_model or get_settings().gemini_model
+
+
+# ------------------------------------------------------------------ choosing a model that exists
+# Google retires model names over time (e.g. gemini-2.5-flash returns 404 "no longer available to new users").
+# When the configured model is missing, the app asks the API which models this key can use and picks the
+# newest stable Flash model, so the report keeps working without editing .env.
+GONE = ("404", "not_found", "not found", "no longer available", "is not supported", "deprecated")
+_auto_model: Optional[str] = None
+_SKIP = ("preview", "exp", "image", "tts", "audio", "live", "embedding", "thinking", "native", "robotics",
+         "computer", "learnlm", "gemma", "aqa", "veo", "imagen")
+
+
+def _version(name: str) -> tuple:
+    m = re.search(r"gemini-(\d+)(?:\.(\d+))?", name)
+    return (int(m.group(1)), int(m.group(2) or 0)) if m else (0, 0)
+
+
+def pick_available_model(client, exclude: tuple = ()) -> Optional[str]:
+    """Newest stable 'flash' (preferred) or 'flash-lite' model that supports generateContent."""
+    found = []
+    try:
+        for m in client.models.list():
+            name = (getattr(m, "name", "") or "").split("/")[-1]
+            actions = [a.lower() for a in (getattr(m, "supported_actions", None) or [])]
+            if not name.startswith("gemini-") or "flash" not in name or name in exclude:
+                continue
+            if any(k in name for k in _SKIP):
+                continue
+            if actions and not any("generatecontent" in a for a in actions):
+                continue
+            found.append(name)
+    except Exception as e:  # noqa: BLE001
+        log.warning("Could not list Gemini models: %s", e)
+        return None
+    if not found:
+        return None
+    found.sort(key=lambda n: (_version(n), "lite" not in n, not n.endswith("latest")), reverse=True)
+    return found[0]
+
+
+def _generate(client, contents, config):
+    """generate_content with retries when Gemini is busy (503/429), an optional fallback model, and an automatic
+    switch to an available model when the configured one has been retired (404)."""
+    global _last_model, _auto_model
+    s = get_settings()
+    models = [_auto_model or s.gemini_model] + ([s.gemini_fallback_model] if s.gemini_fallback_model else [])
+    tried: list[str] = []
+    last_err: Optional[Exception] = None
+    while models:
+        model = models.pop(0)
+        if not model or model in tried:
+            continue
+        tried.append(model)
+        for attempt, wait in enumerate((0, 3, 8)):
+            if wait:
+                time.sleep(wait)
+            try:
+                resp = client.models.generate_content(model=model, contents=contents, config=config)
+                _last_model = model
+                return resp
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                low = str(e).lower()
+                if any(k in low for k in GONE):
+                    alt = pick_available_model(client, exclude=tuple(tried))
+                    if alt:
+                        log.warning("Gemini model %s is not available; switching to %s", model, alt)
+                        _auto_model = alt
+                        models.insert(0, alt)
+                    break
+                if not any(k in low for k in RETRYABLE):
+                    raise
+                log.warning("Gemini %s busy (attempt %d): %s", model, attempt + 1, str(e)[:120])
+    raise last_err  # type: ignore[misc]
 
 
 def generate_text(prompt: str, system: str | None = None, temperature: float = 0.3,
@@ -37,10 +118,7 @@ def generate_text(prompt: str, system: str | None = None, temperature: float = 0
     from google.genai import types
 
     client = _get_client()
-    resp = client.models.generate_content(
-        model=model_name(),
-        contents=prompt,
-        config=types.GenerateContentConfig(
+    resp = _generate(client, prompt, types.GenerateContentConfig(
             system_instruction=system, temperature=temperature, max_output_tokens=max_tokens),
     )
     return (resp.text or "").strip()
@@ -52,10 +130,7 @@ def generate_json(prompt: str, schema: Any, system: str | None = None, temperatu
     from google.genai import types
 
     client = _get_client()
-    resp = client.models.generate_content(
-        model=model_name(),
-        contents=prompt,
-        config=types.GenerateContentConfig(
+    resp = _generate(client, prompt, types.GenerateContentConfig(
             system_instruction=system,
             temperature=temperature,
             max_output_tokens=max_tokens,
@@ -79,10 +154,7 @@ def generate_grounded(prompt: str, system: str | None = None, temperature: float
     from google.genai import types
 
     client = _get_client()
-    resp = client.models.generate_content(
-        model=model_name(),
-        contents=prompt,
-        config=types.GenerateContentConfig(
+    resp = _generate(client, prompt, types.GenerateContentConfig(
             system_instruction=system, temperature=temperature, max_output_tokens=max_tokens,
             tools=[types.Tool(google_search=types.GoogleSearch())],
         ),

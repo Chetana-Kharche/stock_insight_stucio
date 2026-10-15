@@ -155,7 +155,7 @@ def report_doc(report: dict) -> str:
     for s in report.get("sections", []):
         lines += [f"\n## {name} — {s.get('heading')}", s.get("body", "")]
     for key, title in (("key_strengths", "Key strengths"), ("key_risks", "Key risks"),
-                       ("monitorables", "Monitorables"), ("news_takeaways", "News takeaways")):
+                       ("monitorables", "Monitorables"), ("news_takeaways", "Key insights from the news")):
         if report.get(key):
             lines += [f"\n## {name} — {title}"] + [f"- {x}" for x in report[key]]
     kr = (report.get("tables") or {}).get("key_ratios") or {}

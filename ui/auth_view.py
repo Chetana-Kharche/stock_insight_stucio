@@ -8,10 +8,10 @@ from core.auth import AuthError, send_password_reset, sign_in, sign_up
 from core.config import APP_NAME
 
 FEATURES = [
-    ("1", "Live Screener capture", "Quarterly results, P&L, balance sheet, cash flow, ratios, peers and shareholding."),
-    ("2", "Structured storage", "Every number saved in Supabase PostgreSQL — query it any time."),
-    ("3", "Broker-style analysis", "Scorecard, stance and an AI-written company update with exhibits."),
-    ("4", "Ask the AI", "A chatbot grounded in your stored data, news and reports."),
+    ("1", "Screener data, stored", "Results, P&L, balance sheet, cash flow, ratios, peers and shareholding for any NSE company."),
+    ("2", "Missing figures filled", "Ratios Screener does not show, from Yahoo Finance and Value Research, with sources."),
+    ("3", "Broker-style reports", "Scorecard, three-year projections, peers and news from NSE, BSE and 11 news websites."),
+    ("4", "Your own workspace", "Portfolio, watchlist and a notebook that is saved to your account."),
 ]
 
 
@@ -26,25 +26,23 @@ def _login(user) -> None:
 
 
 def _brand_panel() -> None:
-    words = APP_NAME.split(" ", 1)
-    logo = f"{words[0]} <span>{words[1]}</span>" if len(words) == 2 else APP_NAME
     feats = "".join(f"""<div class="feat"><div class="ic">{n}</div>
         <div><div class="ft">{t}</div><div class="fd">{d}</div></div></div>""" for n, t, d in FEATURES)
-    st.html(f"""<div class="sis-auth-brand">
-        <div class="logo">{logo}</div>
-        <div class="tag">Fundamentals capture, structured storage and AI-assisted equity analysis for NSE companies.</div>
+    st.html(f"""<div class="vr-auth-brand">
+        <div class="logo"><div class="mark">SI</div><div class="n">{APP_NAME}</div></div>
+        <div class="tag">Fundamentals, news and AI-assisted analysis for NSE companies, in one place.</div>
         {feats}
     </div>""")
 
 
 def render() -> None:
-    st.write("")
+    st.html('<div style="height:28px"></div>')
     left, right = st.columns([1.05, 1], gap="large")
     with left:
         _brand_panel()
     with right:
-        st.html('<div class="sis-auth-title">Welcome</div>'
-                '<div class="sis-auth-sub">Sign in to continue, or create a free account.</div>')
+        st.html('<div class="vr-auth-title">Welcome</div>'
+                '<div class="vr-auth-sub">Sign in to continue, or create a free account.</div>')
         tab_in, tab_up, tab_reset = st.tabs(["Sign in", "Create account", "Forgot password"])
 
         with tab_in:

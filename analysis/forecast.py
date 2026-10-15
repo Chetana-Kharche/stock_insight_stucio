@@ -6,7 +6,8 @@ Method (per series):
   1. Work on log values when every value is positive (growth compounds), raw values otherwise.
   2. Detect a one-off structural break (merger / demerger style jump) and level-adjust the history
      so the jump does not inflate the growth rate.
-  3. Fit three models: robust trend (HuberRegressor), damped Holt exponential smoothing
+  3. Fit three models (four with the optional TimesFM AI model, see analysis/timesfm_model.py):
+     robust trend (HuberRegressor), damped Holt exponential smoothing
      (parameters by SciPy optimisation) and a fading recent-momentum model.  Quarterly series add
      a same-quarter-last-year model.
   4. Walk-forward backtest every model on the company's own history; weight the models by their
@@ -108,6 +109,10 @@ def _models(season: Optional[int], n: int) -> dict:
          "Fading momentum": _momentum_forecast}
     if season and n >= 2 * season:
         m["Same quarter last year + growth"] = lambda z, h: _seasonal_forecast(z, h, season)
+    from analysis import timesfm_model
+
+    if timesfm_model.enabled() and timesfm_model.load() is not None:
+        m[timesfm_model.MODEL_LABEL] = timesfm_model.forecast   # tested and weighted like the others
     return m
 
 
@@ -236,8 +241,22 @@ def forecast_series(values: list[Optional[float]], h: int, season: Optional[int]
             return None
         return float(np.mean([abs(math.exp(e) - 1) for e in allv]) * 100) if log_space else None
 
+    tfm = None
+    from analysis import timesfm_model
+
+    if timesfm_model.MODEL_LABEL in forecasts:
+        try:
+            r = timesfm_model.forecast_range(z, h)
+            tfm = {"base": [float(x) for x in conv(r["point"] + step)],
+                   "low": [float(x) for x in conv(r["low"] + step)] if r["low"] is not None else None,
+                   "high": [float(x) for x in conv(r["high"] + step)] if r["high"] is not None else None,
+                   "weight_pct": round(weights[timesfm_model.MODEL_LABEL] * 100, 1),
+                   "backtest_mape_pct": _model_mape(timesfm_model.MODEL_LABEL)}
+        except Exception:  # noqa: BLE001 - TimesFM is optional
+            tfm = None
+
     return {
-        "ok": True, "points": n, "log_space": log_space, "last_actual": float(raw[-1]),
+        "ok": True, "points": n, "log_space": log_space, "last_actual": float(raw[-1]), "timesfm": tfm,
         "base": [float(x) for x in base], "low": [float(x) for x in low], "high": [float(x) for x in high],
         "growth_pct": growth, "cagr_pct": cagr, "backtest_mape_pct": mape, "backtest_samples": len(all_ens),
         "confidence": confidence, "break": break_info,
@@ -305,12 +324,28 @@ def _series_block(name: str, unit: str, pts: list[tuple[str, Optional[float]]], 
     return res
 
 
+def method_text() -> str:
+    from analysis import timesfm_model
+
+    base = ("Weighted average of statistical models (robust trend regression, damped Holt exponential smoothing, "
+            "fading momentum")
+    if timesfm_model.enabled() and timesfm_model.load() is not None:
+        base += ", and Google Research's TimesFM AI forecasting model"
+    return (base + "), each tested on the company's own past and weighted by how accurate it was. Ranges are 80% "
+            "intervals from those test errors.")
+
+
 def build_forecast(payload: dict) -> dict:
     """Projections for the next 3 fiscal years and 4 quarters, from Screener history only."""
     try:
         import scipy
         import sklearn
         libs = f"scikit-learn {sklearn.__version__}, SciPy {scipy.__version__}, NumPy {np.__version__}"
+        from analysis import timesfm_model
+
+        tf = timesfm_model.status()
+        if tf["loaded"]:
+            libs += f", TimesFM ({tf['checkpoint']})"
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"forecast libraries missing: {e}"}
 
@@ -374,12 +409,18 @@ def build_forecast(payload: dict) -> dict:
         worst = min(ok_annual, key=lambda b: order[b["confidence"]])["confidence"]
         overall = worst if order[worst] < order[overall] else overall
 
+    tf_status = timesfm_model.status()
+    tf_used = any(b.get("timesfm") for b in annual + quarterly if b.get("ok"))
+    timesfm_info = {"used": tf_used, "enabled": tf_status["enabled"], "checkpoint": tf_status["checkpoint"],
+                    "api": tf_status["api"],
+                    "reason": None if tf_used else timesfm_model.reason_text(tf_status),
+                    "how_to_enable": None if tf_used else timesfm_model.HOW_TO_ENABLE}
+
     return {
         "ok": True,
+        "timesfm": timesfm_info,
         "libraries": libs,
-        "method": ("Weighted average of three statistical models (robust trend regression, damped Holt exponential "
-                   "smoothing, fading momentum), each tested on the company's own past and weighted by how accurate "
-                   "it was. Ranges are 80% intervals from those test errors."),
+        "method": method_text(),
         "horizon_years": HORIZON_YEARS, "horizon_quarters": HORIZON_QUARTERS,
         "annual": annual, "quarterly": quarterly, "derived": derived, "confidence": overall, "notes": notes,
         "caveat": ("Projections extend past figures forward. They do not know about management plans, interest "
@@ -453,6 +494,29 @@ def forecast_tables(fc: dict) -> dict:
     ann_ok = [b for b in fc.get("annual", []) if b.get("ok")]
     out["models"] = {"columns": ["Weight", "Test error"] + ([fiscal_label(l, True) for l in ann_ok[0]["labels"]]
                                                            if ann_ok else []), "rows": model_rows}
+
+    # TimesFM's own forecast next to the base case of all models
+    for key, blocks, lab in (("timesfm_annual", fc.get("annual", []), fiscal_label),
+                             ("timesfm_quarterly", fc.get("quarterly", []), quarter_label)):
+        ok = [b for b in blocks if b.get("ok") and b.get("timesfm")]
+        if not ok:
+            continue
+        first = ok[0]
+        cols = [f"{lab(first['last_label'])} (reported)"] + [lab(l, True) for l in first["labels"]] + \
+               ["Weight in base case", "Past test error"]
+        rows = []
+        for b in ok:
+            t, u = b["timesfm"], b["unit"]
+            rows.append({"metric": f"{b['name']} ({_unit_tag(u)}) · TimesFM forecast", "bold": True,
+                         "values": [_n(b["last_actual"], u)] + [_n(v, u) for v in t["base"]]
+                         + [f"{t['weight_pct']:.0f}%",
+                            f"{t['backtest_mape_pct']:.1f}%" if t.get("backtest_mape_pct") is not None else "–"]})
+            if t.get("low") and t.get("high"):
+                rows.append({"metric": "TimesFM range (10% – 90%)", "indent": True, "values": [""] + [
+                    f"{_n(lo, u)} – {_n(hi, u)}" for lo, hi in zip(t["low"], t["high"])] + ["", ""]})
+            rows.append({"metric": "base case of all models", "indent": True,
+                         "values": [""] + [_n(v, u) for v in b["base"]] + ["", ""]})
+        out[key] = {"columns": cols, "rows": rows}
 
     d = fc.get("derived") or {}
     extra = []

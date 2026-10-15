@@ -18,3 +18,7 @@ scikit-learn>=1.4
 scipy>=1.11
 # supplementary data (Yahoo Finance) used only when building the analysis report
 yfinance>=0.2.50
+# Excel export of Screener data
+openpyxl>=3.1
+# Optional (large download, needs PyTorch): Google TimesFM as a 4th projection model.
+# setup_windows.bat installs it; manually:  pip install "timesfm[torch]"   (TIMESFM_ENABLED=true is the default)

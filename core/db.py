@@ -23,9 +23,9 @@ def _connect() -> psycopg.Connection:
     url = get_settings().database_url
     if not url or "YOUR-" in url:
         raise DatabaseNotConfigured(
-            "DATABASE_URL is not set. Copy .env.example to .env and fill in your Supabase connection string."
+            "DATABASE_URL is not set. Copy .env.example to .env and fill in your Supabase Session pooler connection string."
         )
-    # prepare_threshold=None keeps it compatible with Supabase's pgbouncer poolers
+    # prepare_threshold=None keeps it compatible with Supabase's poolers
     return psycopg.connect(url, row_factory=dict_row, prepare_threshold=None, connect_timeout=15)
 
 
@@ -91,9 +91,56 @@ def jsonb(value: Any) -> Jsonb:
     return Jsonb(value, dumps=lambda o: json.dumps(o, default=str))
 
 
+_last_error: Optional[str] = None
+
+
 def ping() -> bool:
+    global _last_error
     try:
         fetch_one("select 1 as ok")
+        _last_error = None
         return True
-    except Exception:
+    except Exception as e:  # noqa: BLE001
+        _last_error = f"{type(e).__name__}: {e}"
         return False
+
+
+def last_error() -> Optional[str]:
+    """The real reason the last ping() failed (shown on screen to help fix .env)."""
+    return _last_error
+
+
+_schema_checked = False
+
+REQUIRED_TABLES = ("profiles", "companies", "scrape_runs", "financial_facts", "summary_ratios", "peers",
+                   "company_documents", "price_history", "news_items", "analysis_reports", "chat_messages", "rag_sync",
+                   "user_notes", "watchlist", "portfolio_holdings", "external_data", "company_links")
+
+
+def missing_tables() -> list[str]:
+    rows = fetch_all("select tbl from unnest(%s::text[]) as tbl where to_regclass('public.' || tbl) is null",
+                     (list(REQUIRED_TABLES),))
+    return [r["tbl"] for r in rows]
+
+
+def ensure_schema() -> Optional[str]:
+    """Create any missing tables from sql/schema.sql (once per app process).
+
+    The script only uses CREATE ... IF NOT EXISTS / CREATE OR REPLACE VIEW, so existing data is never touched.
+    Returns an error text, or None when everything is in place.
+    """
+    global _schema_checked
+    if _schema_checked:
+        return None
+    try:
+        if missing_tables():
+            from pathlib import Path
+
+            execute((Path(__file__).resolve().parent.parent / "sql" / "schema.sql").read_text(encoding="utf-8"))
+            still = missing_tables()
+            if still:
+                return "tables still missing: " + ", ".join(still)
+        _schema_checked = True
+        return None
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}: {e}"

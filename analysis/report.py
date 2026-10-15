@@ -18,11 +18,15 @@ from typing import Any, Callable, Optional
 from pydantic import BaseModel, Field
 
 from analysis import llm
-from analysis.external import collect_supplementary
+from analysis.external import get_supplementary
+from analysis.news import (COMPANY_DAYS, SOURCE_NAMES, filter_company_news, group_by_source, news_counts,
+                           only_five_sources,
+                           rule_based_insights)
 from analysis.forecast import (build_forecast, fiscal_label, forecast_tables, outlook_sentences,
                                quarter_label)
 from analysis.metrics import compute_metrics, find_series
 from analysis.scorecard import build_scorecard
+from core.config import get_settings
 from core.utils import fmt_num, fmt_pct, pct_change, safe_div
 
 log = logging.getLogger(__name__)
@@ -58,7 +62,7 @@ class Narrative(BaseModel):
     key_risks: list[str]
     monitorables: list[str] = Field(description="What to watch in coming quarters")
     stance_rationale: str
-    news_takeaways: list[str]
+    news_takeaways: list[str] = Field(description="4-6 key insights from the news headlines, each naming the website")
 
 
 SYSTEM_PROMPT = (
@@ -76,7 +80,8 @@ SYSTEM_PROMPT = (
     "(6) FORECASTS: DATA contains 'model_projections' computed by the system with statistical models. You may "
     "quote them, always calling them 'model projection', using the E suffix (FY27E) and giving the low-high "
     "range and the confidence level. Do not create any other forecast and do not present a projection as a "
-    "fact. (7) Only when a figure is in neither Screener data nor the supplementary data may you say it was "
+    "fact. If 'timesfm_ai_model_forecast' is present you may also quote it as 'TimesFM AI model forecast' "
+    "and compare it with the base case. (7) Only when a figure is in neither Screener data nor the supplementary data may you say it was "
     "not available, and say it once, briefly. (8) For banks/NBFCs, note that Screener's 'Financing Profit' is "
     "after provisions and other operating expenses."
 )
@@ -241,6 +246,28 @@ def _q_label(label: str) -> str:
         return label
 
 
+def counts_line(report: dict) -> str:
+    c = report.get("news_counts") or {}
+    if not c:
+        return ""
+    return (f"Headlines naming the company in the last {report.get('news_days', 90)} days, per website: "
+            + " · ".join(f"{k} {v}" for k, v in c.items())
+            + f". Up to {get_settings().news_per_source} are kept per website; a lower number means that website published fewer headlines "
+              "naming the company in this period (or did not answer).")
+
+
+def _balanced(items: list[dict], per_source: int, total: int) -> list[dict]:
+    """The newest few headlines from EACH website (for the AI prompt), so one website does not dominate."""
+    seen: dict = {}
+    out = []
+    for it in items:
+        k = it.get("source")
+        if seen.get(k, 0) < per_source:
+            seen[k] = seen.get(k, 0) + 1
+            out.append(it)
+    return out[:total]
+
+
 # ------------------------------------------------------------------ forecast / supplementary -> prompt
 def _forecast_for_llm(fc: dict) -> dict:
     """Compact view of the projections for the AI (it may quote these, nothing else)."""
@@ -259,6 +286,8 @@ def _forecast_for_llm(fc: dict) -> dict:
             "confidence": b["confidence"],
             "average_past_test_error_pct": None if b.get("backtest_mape_pct") is None else round(b["backtest_mape_pct"], 1),
             "one_off_jump_adjusted": b.get("break"),
+            "timesfm_ai_model_forecast": None if not b.get("timesfm") else [
+                {"period": lab(l, True), "value": round(v, nd)} for l, v in zip(b["labels"], b["timesfm"]["base"])],
         }
 
     d = fc.get("derived") or {}
@@ -385,7 +414,7 @@ def _rule_based_narrative(m: dict, sc: dict, news: list[dict], announcements: li
         "key_risks": m.get("cons") or [],
         "monitorables": [f"Next results date: {meta.get('upcoming_result_date')}"] if meta.get("upcoming_result_date") else [],
         "stance_rationale": f"Score {sc['score']:.0f}/100 from the six-factor scorecard.",
-        "news_takeaways": [n["title"] for n in news[:5]],
+        "news_takeaways": rule_based_insights(news, meta.get("name") or ""),
     }
 
 
@@ -394,7 +423,9 @@ def build_report(payload: dict, news: list[dict] | None = None, use_llm: bool = 
                  use_external: bool = True, progress: Optional[Callable[[str], None]] = None) -> dict:
     """payload = one stored Screener capture.  use_external=False builds the report from Screener only."""
     say = progress or (lambda _msg: None)
-    news = news or []
+    meta0 = payload.get("meta") or {}
+    # keep only headlines that name this company, from the known sources (drops general market news)
+    news = filter_company_news(only_five_sources(news or []), meta0.get("name") or "", meta0.get("nse_symbol"))
     say("Computing metrics and scorecard from the stored Screener data…")
     m = compute_metrics(payload)
     m["about"] = payload.get("about", "")
@@ -413,7 +444,8 @@ def build_report(payload: dict, news: list[dict] | None = None, use_llm: bool = 
     if use_external:
         say("Looking up figures Screener does not publish on Yahoo Finance, Value Research, Investing.com, "
             "Macrotrends…")
-        sup = collect_supplementary(payload, m, use_ai=use_llm)
+        company_id = (payload.get("meta") or {}).get("company_db_id")
+        sup = get_supplementary(payload, m, company_id, use_ai=use_llm)
     else:
         sup = {"enabled": False, "items": [], "estimates": [], "links": [],
                "notes": ["Other websites were not used for this report (switched off by the user)."]}
@@ -440,7 +472,7 @@ def build_report(payload: dict, news: list[dict] | None = None, use_llm: bool = 
         "recent_exchange_announcements": [{"date": a.get("date"), "title": a["title"], "summary": a.get("summary")}
                                           for a in announcements],
         "recent_news_headlines": [{"date": str(n.get("published_at") or "")[:10], "title": n["title"],
-                                   "source": n.get("source")} for n in news[:15]],
+                                   "website": n.get("source")} for n in _balanced(news, 4, 48)],
         "model_projections": _forecast_for_llm(fc),
         "supplementary_data_other_websites": _supplementary_for_llm(sup),
     }
@@ -459,7 +491,9 @@ def build_report(payload: dict, news: list[dict] | None = None, use_llm: bool = 
             "Wherever supplementary_data_other_websites fills something Screener lacks (for a bank: NIM, NPAs, "
             "CASA, capital adequacy), use it in the relevant section and name the website.\n"
             "key_strengths / key_risks / monitorables: 4-6 bullets each, specific and numeric where the data allows.\n"
-            "news_takeaways: 3-6 bullets summarising what the announcements/news imply (no speculation).\n\n"
+            "news_takeaways: 4-6 key insights from recent_news_headlines and announcements: what happened and why "
+            "it may matter for the business, naming the website in brackets after each point, e.g. (Mint). Use only "
+            "what the headlines say; no speculation, no share-price predictions.\n\n"
             f"DATA:\n{json.dumps(data_for_llm, default=str)}"
         )
         try:
@@ -472,7 +506,7 @@ def build_report(payload: dict, news: list[dict] | None = None, use_llm: bool = 
         narrative = _rule_based_narrative(m, sc, news, announcements, fc, sup)
 
     report = {
-        "report_version": 2,
+        "report_version": 3,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "model": model_used,
         "llm_error": llm_error,
@@ -507,7 +541,14 @@ def build_report(payload: dict, news: list[dict] | None = None, use_llm: bool = 
                            for p in (payload.get("peers") or {}).get("rows", [])],
                   "median": ((payload.get("peers") or {}).get("median") or {}).get("values")},
         "news": [{"title": n["title"], "url": n["url"], "source": n.get("source"),
-                  "published_at": str(n.get("published_at") or "")} for n in news[:12]],
+                  "published_at": str(n.get("published_at") or "")} for n in news],
+        "news_by_source": [{"source": src, "items": [{"title": n["title"], "url": n["url"],
+                                                      "published_at": str(n.get("published_at") or "")}
+                                                     for n in lst]}
+                           for src, lst in group_by_source(news, get_settings().report_news_per_source or 5,
+                                                            main_first=True).items()],
+        "news_sources": SOURCE_NAMES,
+        "news_counts": dict(news_counts(news)), "news_days": COMPANY_DAYS,
         "announcements": announcements,
         "metrics": _round(m),
         "forecast": _round(fc, 4),

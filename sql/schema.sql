@@ -1,6 +1,7 @@
 -- =====================================================================
 -- Stock Insight Studio - Supabase / PostgreSQL schema
 -- Run this once in Supabase: SQL Editor -> New query -> paste -> Run
+-- (the app also runs it by itself on start when tables are missing)
 -- Safe to re-run (uses IF NOT EXISTS).
 -- =====================================================================
 
@@ -202,26 +203,92 @@ from public.financial_facts f
 join public.v_latest_runs lr on lr.run_id = f.run_id;
 
 -- =====================================================================
+-- Notebook, watchlist, portfolio and data from other websites
+-- =====================================================================
+
+-- ---------- Notebook: the user's own notes + automatic activity log ----------
+create table if not exists public.user_notes (
+    id          bigserial primary key,
+    user_id     uuid not null references public.profiles(id) on delete cascade,
+    company_id  bigint references public.companies(id) on delete cascade,
+    note_type   text not null default 'text' check (note_type in ('text','outlook','action','activity')),
+    content     text not null,
+    created_at  timestamptz not null default now()
+);
+create index if not exists idx_notes_user on public.user_notes (user_id, created_at desc);
+
+-- ---------- Watchlist (companies the user follows) ----------
+create table if not exists public.watchlist (
+    user_id     uuid not null references public.profiles(id) on delete cascade,
+    company_id  bigint not null references public.companies(id) on delete cascade,
+    added_at    timestamptz not null default now(),
+    primary key (user_id, company_id)
+);
+
+-- ---------- Portfolio holdings entered by the user ----------
+create table if not exists public.portfolio_holdings (
+    id          bigserial primary key,
+    user_id     uuid not null references public.profiles(id) on delete cascade,
+    company_id  bigint not null references public.companies(id) on delete cascade,
+    quantity    numeric not null check (quantity > 0),
+    avg_price   numeric not null check (avg_price > 0),
+    buy_date    date,
+    created_at  timestamptz not null default now()
+);
+create index if not exists idx_holdings_user on public.portfolio_holdings (user_id);
+
+-- ---------- Figures from other websites (Yahoo Finance, Value Research ...) ----------
+-- One row per lookup. Screener data stays in its own tables; this is a separate cache.
+create table if not exists public.external_data (
+    id          bigserial primary key,
+    company_id  bigint not null references public.companies(id) on delete cascade,
+    fetched_at  timestamptz not null default now(),
+    data        jsonb not null
+);
+create index if not exists idx_external_company on public.external_data (company_id, fetched_at desc);
+
+
+-- ---------- Pages of this company on other websites (e.g. its Value Research stock page) ----------
+create table if not exists public.company_links (
+    company_id  bigint not null references public.companies(id) on delete cascade,
+    site        text not null,
+    url         text not null,
+    found_by    text,                         -- search / ai / user
+    found_at    timestamptz not null default now(),
+    primary key (company_id, site)
+);
+
+-- =====================================================================
 -- Row Level Security
 -- The Streamlit app connects with the database connection string (server side),
 -- which bypasses RLS. RLS below protects the tables if anyone uses the public
 -- anon key through the Supabase REST API.
 -- =====================================================================
-alter table public.profiles          enable row level security;
-alter table public.companies         enable row level security;
-alter table public.scrape_runs       enable row level security;
-alter table public.financial_facts   enable row level security;
-alter table public.summary_ratios    enable row level security;
-alter table public.peers             enable row level security;
-alter table public.company_documents enable row level security;
-alter table public.price_history     enable row level security;
-alter table public.news_items        enable row level security;
-alter table public.analysis_reports  enable row level security;
-alter table public.chat_messages     enable row level security;
-alter table public.rag_sync          enable row level security;
+alter table public.profiles           enable row level security;
+alter table public.companies          enable row level security;
+alter table public.scrape_runs        enable row level security;
+alter table public.financial_facts    enable row level security;
+alter table public.summary_ratios     enable row level security;
+alter table public.peers              enable row level security;
+alter table public.company_documents  enable row level security;
+alter table public.price_history      enable row level security;
+alter table public.news_items         enable row level security;
+alter table public.analysis_reports   enable row level security;
+alter table public.chat_messages      enable row level security;
+alter table public.rag_sync           enable row level security;
+alter table public.user_notes         enable row level security;
+alter table public.watchlist          enable row level security;
+alter table public.portfolio_holdings enable row level security;
+alter table public.external_data      enable row level security;
+alter table public.company_links      enable row level security;
 
 do $$
 begin
+  -- only on Supabase (plain PostgreSQL has no 'authenticated' role or auth.uid())
+  if not exists (select 1 from pg_roles where rolname = 'authenticated')
+     or to_regprocedure('auth.uid()') is null then
+    return;
+  end if;
   -- market data is readable by any signed-in user
   if not exists (select 1 from pg_policies where policyname = 'read_companies') then
     create policy read_companies on public.companies for select to authenticated using (true);
@@ -235,6 +302,12 @@ begin
   if not exists (select 1 from pg_policies where policyname = 'read_news') then
     create policy read_news on public.news_items for select to authenticated using (true);
   end if;
+  if not exists (select 1 from pg_policies where policyname = 'read_external') then
+    create policy read_external on public.external_data for select to authenticated using (true);
+  end if;
+  if not exists (select 1 from pg_policies where policyname = 'read_links') then
+    create policy read_links on public.company_links for select to authenticated using (true);
+  end if;
   -- personal data only for its owner
   if not exists (select 1 from pg_policies where policyname = 'own_profile') then
     create policy own_profile on public.profiles for all to authenticated using (id = auth.uid()) with check (id = auth.uid());
@@ -247,5 +320,14 @@ begin
   end if;
   if not exists (select 1 from pg_policies where policyname = 'own_chats') then
     create policy own_chats on public.chat_messages for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+  end if;
+  if not exists (select 1 from pg_policies where policyname = 'own_notes') then
+    create policy own_notes on public.user_notes for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+  end if;
+  if not exists (select 1 from pg_policies where policyname = 'own_watchlist') then
+    create policy own_watchlist on public.watchlist for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+  end if;
+  if not exists (select 1 from pg_policies where policyname = 'own_holdings') then
+    create policy own_holdings on public.portfolio_holdings for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
   end if;
 end $$;

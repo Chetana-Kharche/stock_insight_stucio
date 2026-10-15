@@ -15,10 +15,11 @@ from rag.sync import sync_company
 from ui import components as C
 
 
-def render() -> None:
+def render(embedded: bool = False) -> None:
     s = get_settings()
-    C.page_header("System status", "Check connections, load the NSE company list and manage the RAGFlow knowledge base.",
-                  eyebrow="Settings")
+    if not embedded:
+        C.page_header("System status", "Check connections, load the NSE company list and manage the RAGFlow "
+                      "knowledge base.")
 
     C.section("Connections", "Live status of every service the app depends on")
     c1, c2, c3 = st.columns(3, gap="medium")
@@ -29,7 +30,10 @@ def render() -> None:
             st.caption(f"{repo.count_companies():,} companies in the master list")
     with c2:
         st.metric("Gemini", "Configured" if s.llm_enabled else "Missing key")
-        st.caption(f"Model: {s.gemini_model}")
+        from analysis import llm as _llm
+
+        st.caption(f"Model: {_llm.model_name()}" + (f" (auto-selected; {s.gemini_model} is not available)"
+                                                    if _llm.model_name() != s.gemini_model else ""))
     with c3:
         if s.rag_configured:
             alive = RagFlowClient().ping()
@@ -42,16 +46,35 @@ def render() -> None:
     C.section("Analysis add-ons", "Used only while an analysis report is generated; the Screener scrape is separate")
     d1, d2 = st.columns(2, gap="medium")
     with d1:
-        missing = [m for m in ("sklearn", "scipy") if importlib.util.find_spec(m) is None]
+        def _has(mod: str) -> bool:
+            try:
+                return importlib.util.find_spec(mod) is not None
+            except (ValueError, ImportError):
+                return False
+
+        missing = [m for m in ("sklearn", "scipy") if not _has(m)]
         st.metric("Projection libraries", "Ready" if not missing else "Missing")
         st.caption("scikit-learn and SciPy" if not missing else
                    f"Not installed: {', '.join(missing)} — run pip install -r requirements.txt")
+        from analysis import timesfm_model
+
+        tf = timesfm_model.status()
+        if not tf["enabled"]:
+            st.caption("TimesFM (Google AI forecasting model): off. To use it: pip install \"timesfm[torch]\" and set "
+                       "TIMESFM_ENABLED=true in .env")
+        elif tf["loaded"]:
+            st.caption(f"TimesFM: loaded ({tf['checkpoint']}, {tf['api']}) — used as a 4th projection model")
+        else:
+            st.caption(f"TimesFM: enabled but not loaded — {tf['error']}")
     with d2:
         if not s.external_enabled:
             st.metric("Other websites", "Switched off")
             st.caption("EXTERNAL_SOURCES_ENABLED=false — reports use Screener only")
         else:
-            has_yf = importlib.util.find_spec("yfinance") is not None
+            try:
+                has_yf = importlib.util.find_spec("yfinance") is not None
+            except (ValueError, ImportError):
+                has_yf = False
             st.metric("Other websites", "Connected" if has_yf and s.llm_enabled else "Partly connected")
             st.caption("Yahoo Finance: " + ("yfinance installed" if has_yf else "yfinance not installed")
                        + " · AI search of " + ", ".join(d for d in s.external_sites if "yahoo" not in d)
@@ -89,7 +112,7 @@ def render() -> None:
     with st.container(border=True):
         company = st.session_state.get("company")
         if not company:
-            st.caption("Select a company on the dashboard to see its sync state.")
+            st.caption("Open a company on the Stocks tab to see its sync state.")
         else:
             state = repo.get_rag_state(company["id"]) or {}
             x, y = st.columns([3, 1], vertical_alignment="center")

@@ -286,6 +286,25 @@ def build_report_pdf(report: dict, payload: dict | None = None) -> bytes:
                                             st, "Base case = weighted average of the models. Low and high case = "
                                                 "80% range from each model's past test errors."))
                 ex += 1
+        tfi = fc.get("timesfm") or {}
+        if tfi.get("used"):
+            for key, title, unit_key in (("timesfm_annual", "TimesFM AI forecast (Google Research) by fiscal year",
+                                          "forecast_annual"),
+                                         ("timesfm_quarterly", "TimesFM AI forecast for the next four quarters",
+                                          "forecast_quarterly")):
+                t = ft.get(key) or {}
+                if t.get("rows"):
+                    story.append(_table_exhibit(ex, title, unit_of(unit_key),
+                                                data_table(t["columns"], t["rows"], CONTENT_W, 5.4 * cm, st,
+                                                           header_bg=NAVY),
+                                                st, f"Model {tfi.get('checkpoint')}: forecasts the company's own "
+                                                    "Screener history directly; range = the model's 10% and 90% "
+                                                    "quantiles. Weight = its share in the base case, from its "
+                                                    "accuracy on past years."))
+                    ex += 1
+        elif tfi:
+            story.append(Paragraph(esc(f"TimesFM AI forecast: not used for this report. {tfi.get('reason') or ''}"),
+                                   st["small"]))
         t = ft.get("derived") or {}
         if t.get("rows"):
             story.append(_table_exhibit(ex, "What the projection implies", ("times (x) and %", "first row in times, second row in percent"),
@@ -339,9 +358,13 @@ def build_report_pdf(report: dict, payload: dict | None = None) -> bytes:
         rows = [{"metric": p["name"], "values": [p["values"].get(c, "") for c in cols]} for p in peers["rows"]]
         if peers.get("median"):
             rows.append({"metric": "Median", "values": [peers["median"].get(c, "") for c in cols], "bold": True})
-        story.append(_table_exhibit(ex, "Peer comparison", unit_of("peers"),
+        story.append(_table_exhibit(ex, "Peer comparison (companies in the same industry, from Screener)",
+                                    unit_of("peers"),
                                     data_table(cols, rows, CONTENT_W, 3.6 * cm, st, font_size=6.4), st))
         ex += 1
+    else:
+        story += [Paragraph("Peer comparison", st["h2"]),
+                  Paragraph("Screener did not return a peer list for this company in this capture.", st["small"])]
 
     # ---------------- supplementary data from other websites
     sup = report.get("supplementary") or {}
@@ -355,8 +378,9 @@ def build_report_pdf(report: dict, payload: dict | None = None) -> bytes:
         if sup.get("items"):
             rows = []
             for it in sup["items"]:
-                how = "read by yfinance library" if it.get("via") == "yfinance" else (
-                    "found by AI search" + ("" if it.get("seen_in_search") else ", page not confirmed"))
+                how = {"yfinance": "read by yfinance library", "NSE API": "read from NSE's official quote data",
+                   "Value Research page": "read from its stock page"}.get(
+                    it.get("via")) or ("found by AI search" + ("" if it.get("seen_in_search") else ", page not confirmed"))
                 rows.append([esc(it["metric"]), f"<b>{esc(it['value'])}</b>", esc(it.get("period") or "–"),
                              _a(it.get("url", ""), it["source"]),
                              esc("; ".join(x for x in [it.get("why"), how] if x))])
@@ -398,7 +422,7 @@ def build_report_pdf(report: dict, payload: dict | None = None) -> bytes:
 
     # ---------------- strengths / risks / monitorables
     for key, title in (("key_strengths", "Key strengths"), ("key_risks", "Key risks"),
-                       ("monitorables", "Key monitorables"), ("news_takeaways", "News takeaways")):
+                       ("monitorables", "Key monitorables")):
         items = report.get(key) or []
         if items:
             story.append(Paragraph(title, st["h2"]))
@@ -406,22 +430,59 @@ def build_report_pdf(report: dict, payload: dict | None = None) -> bytes:
                 story.append(Paragraph(esc(b), st["bullet"], bulletText="•"))
 
     # ---------------- news & announcements
+    groups = report.get("news_by_source") or []
+    if not groups and report.get("news"):  # reports made before news_by_source existed
+        tmp: dict = {}
+        for n in report["news"]:
+            tmp.setdefault(n.get("source") or "Other", []).append(n)
+        groups = [{"source": k, "items": v[:6]} for k, v in tmp.items()]
     anns = report.get("announcements") or []
-    news = report.get("news") or []
-    if anns or news:
-        story += [CondPageBreak(6 * cm), Paragraph("Recent announcements and news", st["h1"])]
-        for a in anns[:10]:
-            d = str(a.get("date") or "")[:10]
-            txt = f"<b>{esc(d)}</b> · <link href='{esc(a.get('url', ''))}'>{esc(a.get('title', ''))}</link>"
-            if a.get("summary"):
-                txt += f" — {esc(a['summary'])}"
-            story.append(Paragraph(txt, st["link"], bulletText="•"))
-        if news:
-            story.append(Spacer(1, 4))
-            for n in news[:12]:
+    insights = report.get("news_takeaways") or []
+    if groups or anns or insights:
+        story += [CondPageBreak(7 * cm), Paragraph("News and announcements", st["h1"])]
+        srcs = report.get("news_sources") or [g["source"] for g in groups]
+        story.append(Paragraph("Latest news from " + esc(", ".join(srcs)) + ". Each line shows the website, then "
+                               "the headline (click to open the article) and the date.", st["small"]))
+        from analysis.report import counts_line
+
+        if counts_line(report):
+            story.append(Paragraph(esc(counts_line(report)), st["tiny"]))
+        # The report shows the main headlines per website (.env REPORT_NEWS_PER_SOURCE, PDF_NEWS_MAX);
+        # the full list stays in the app: Analysis Report -> "All headlines found".
+        from core.config import get_settings
+
+        cfg = get_settings()
+        per, cap = cfg.report_news_per_source or 5, cfg.pdf_news_max or 70
+        printed = 0
+        total = sum((report.get("news_counts") or {}).values()) or sum(len(g["items"]) for g in groups)
+        for g in groups:
+            for n in g["items"][:per]:
+                if printed >= cap:
+                    break
                 d = str(n.get("published_at") or "")[:10]
-                txt = (f"<b>{esc(d)}</b> · <link href='{esc(n.get('url', ''))}'>{esc(n.get('title', ''))}</link>"
-                       f" <font color='#6B7280'>({esc(n.get('source') or '')})</font>")
+                story.append(Paragraph(f"<b>{esc(g['source'])}</b> — <link href='{esc(n.get('url', ''))}'>"
+                                       f"{esc(n.get('title', ''))}</link>"
+                                       + (f" <font color='#6B7280'>({esc(d)})</font>" if d else ""),
+                                       st["link"], bulletText="•"))
+                printed += 1
+        if total > printed:
+            story.append(Paragraph(f"Showing the {printed} main headlines of {total} found (up to {per} per website: "
+                                   "results, orders, deals, dividends and management news first). "
+                                   "The full list is in the app: Analysis Report → All headlines found.",
+                                   st["tiny"]))
+        if not groups:
+            story.append(Paragraph("No recent headlines were found on these websites.", st["small"]))
+        if insights:
+            box = [Paragraph("Key insights from the news", st["h2"])]
+            box += [Paragraph(esc(b), st["bullet"], bulletText="•") for b in insights]
+            story.append(KeepTogether(box))
+        if anns:
+            story.append(Paragraph("Exchange announcements (company filings, via Screener)", st["h2"]))
+            for a in anns[:10]:
+                d = str(a.get("date") or "")[:10]
+                txt = f"<b>{esc(d)}</b> · <link href='{esc(a.get('url', ''))}'>{esc(a.get('title', ''))}</link>"
+                if a.get("summary"):
+                    txt += f" — {esc(a['summary'])}"
                 story.append(Paragraph(txt, st["link"], bulletText="•"))
 
     # ---------------- disclaimer

@@ -9,9 +9,9 @@
 ## 2. Create the tables
 1. In the left menu, open **SQL Editor** and click **New query**.
 2. Open `sql/schema.sql` from this project, copy all of it, paste it into the editor, and click **Run**.
-3. You should see "Success. No rows returned". Open **Table Editor** and check that these tables exist: `companies`, `scrape_runs`, `financial_facts`, `summary_ratios`, `peers`, `company_documents`, `price_history`, `news_items`, `analysis_reports`, `chat_messages`, `rag_sync` and `profiles`.
+3. You should see "Success. No rows returned". Open **Table Editor** and check that these tables exist: `companies`, `scrape_runs`, `financial_facts`, `summary_ratios`, `peers`, `company_documents`, `price_history`, `news_items`, `analysis_reports`, `chat_messages`, `rag_sync`, `profiles`, `user_notes`, `watchlist`, `portfolio_holdings`, `external_data` and `company_links`.
 
-The script is safe to run again.
+The script is safe to run again. The app also creates any missing tables by itself when it starts, so after an update you do not need to run anything.
 
 ## 3. Copy the keys into `.env`
 | `.env` variable | Where to find it |
@@ -24,7 +24,8 @@ The Session pooler string looks like this:
 ```
 postgresql://postgres.abcdefghijkl:MyPassword@aws-0-ap-south-1.pooler.supabase.com:5432/postgres
 ```
-Use the Session pooler, not the "Direct connection". On the free plan, the direct connection is IPv6-only and fails on most home networks.
+Use the Session pooler, not the "Direct connection" (`db.<ref>.supabase.co`). On the free plan, the direct connection is IPv6-only and fails on most home networks with `ConnectionTimeout`.
+The host part must match your project's region (for example `ap-northeast-1` for Tokyo, `ap-south-1` for Mumbai), and the user must be `postgres.<your-project-ref>`, not just `postgres`. Copy it exactly as Supabase shows it.
 
 If your password contains special characters such as `@ # / :`, URL-encode them. For example, `@` becomes `%40`.
 

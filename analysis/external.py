@@ -4,10 +4,12 @@ Screener.in stays the main source: the scrape, the stored facts, the scorecard a
 from Screener alone.  This module fills gaps (figures Screener does not publish) and adds a few extra
 data points that matter for analysis, from:
 
+    NSE                    - official quote API (sector P/E, delivery %, free float ...)
+    Value Research Online  - its public stock page read directly (analysis/valueresearch.py):
+                             VR quality/growth/valuation/momentum scores, industry P/E, EV/EBITDA, returns vs Sensex
     Yahoo Finance          - structured fields through the `yfinance` library
-    Value Research Online  \
-    Investing.com           }- looked up by Gemini with Google Search, restricted to these sites
-    Macrotrends            /
+    Investing.com, Macrotrends (and Value Research for anything else) - looked up by Gemini with Google Search,
+                             restricted to these sites
 
 Rules:
   * a field is taken only if Screener does not already provide it;
@@ -30,7 +32,10 @@ from core.utils import fmt_num
 
 log = logging.getLogger(__name__)
 
+CACHE_VERSION = 5   # bump when the lookup changes, so old cached lookups are not reused
+
 SITE_NAMES = {
+    "nseindia.com": "NSE",
     "finance.yahoo.com": "Yahoo Finance",
     "valueresearchonline.com": "Value Research Online",
     "investing.com": "Investing.com",
@@ -73,6 +78,9 @@ def source_links(company_name: str, nse_symbol: Optional[str], bse_code: Optiona
     q = quote_plus(short_name(company_name or nse_symbol or ""))
     sym = (nse_symbol or "").upper()
     links = []
+    if sym:
+        links.append({"site": "NSE", "url": f"https://www.nseindia.com/get-quotes/equity?symbol={sym}",
+                      "note": "official quote, delivery %, sector P/E, filings"})
     if sym:
         links.append({"site": "Yahoo Finance", "url": f"https://finance.yahoo.com/quote/{sym}.NS/",
                       "note": "quote, analyst estimates, statistics"})
@@ -175,6 +183,101 @@ def fetch_yahoo(nse_symbol: Optional[str], bse_code: Optional[str] = None, is_le
     return {"ticker": tk, "url": url, "items": items, "estimates": estimates}
 
 
+# ------------------------------------------------------------------ NSE (official exchange data)
+def _g(d: Any, *path: str) -> Any:
+    for k in path:
+        if not isinstance(d, dict):
+            return None
+        d = d.get(k)
+    return d
+
+
+def fetch_nse(nse_symbol: Optional[str]) -> dict:
+    """Exchange-level facts Screener does not show, from NSE's quote API: sector P/E, delivery %, free float,
+    impact cost, margin rate, price band, 52-week high/low dates, F&O status, NSE industry classification."""
+    if not nse_symbol:
+        return {"error": "no NSE symbol"}
+    from analysis.market import _nse_session
+
+    sym = quote_plus(nse_symbol.upper())
+    url = f"https://www.nseindia.com/get-quotes/equity?symbol={sym}"
+    import time
+
+    q, t, last = None, {}, "no answer"
+    for attempt in range(3):          # NSE needs fresh cookies from its web pages and sometimes refuses the first try
+        try:
+            sess = _nse_session()
+            sess.headers["Referer"] = url
+            try:
+                sess.get(url, timeout=12)  # the quote page sets the cookies the API checks
+            except Exception:  # noqa: BLE001
+                pass
+            r = sess.get(f"https://www.nseindia.com/api/quote-equity?symbol={sym}", timeout=12)
+            if r.status_code != 200 or not r.text.strip().startswith("{"):
+                last = f"HTTP {r.status_code}"
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            q = r.json()
+            try:
+                tr = sess.get(f"https://www.nseindia.com/api/quote-equity?symbol={sym}&section=trade_info", timeout=12)
+                t = tr.json() if tr.ok and tr.text.strip().startswith("{") else {}
+            except Exception:  # noqa: BLE001
+                t = {}
+            break
+        except Exception as e:  # noqa: BLE001 - NSE often blocks scripts
+            last = type(e).__name__
+            time.sleep(1.5 * (attempt + 1))
+    if q is None:
+        return {"error": f"NSE did not answer ({last}); NSE often blocks automated requests, try again later"}
+
+    items: list[dict] = []
+
+    def add(metric: str, value: Any, period: str = "latest", why: str = "", fmt: str = "{}") -> None:
+        if value in (None, "", "-", "NA"):
+            return
+        try:
+            text = fmt.format(float(value)) if fmt != "{}" else str(value)
+        except (TypeError, ValueError):
+            text = str(value)
+        items.append({"metric": metric, "value": text, "period": period, "source": "NSE", "url": url,
+                      "via": "NSE API", "why": why})
+
+    sector_pe = _g(q, "metadata", "pdSectorPe")
+    add("Sector P/E (" + str(_g(q, "metadata", "pdSectorInd") or "sector index").strip() + ")", sector_pe,
+        why="compare the company's P/E with its sector", fmt="{:.2f}x")
+    add("Delivery as % of traded quantity", _g(t, "securityWiseDP", "deliveryToTradedQuantity"),
+        period=str(_g(t, "securityWiseDP", "secWiseDelPosDate") or "latest session"),
+        why="share of trades held, not intraday", fmt="{:.2f}%")
+    ffmc, tmc = _g(t, "marketDeptOrderBook", "tradeInfo", "ffmc"), _g(t, "marketDeptOrderBook", "tradeInfo", "totalMarketCap")
+    try:
+        if ffmc and tmc and float(tmc) > 0:
+            add("Free-float as % of market cap", float(ffmc) / float(tmc) * 100,
+                why="shares available for public trading", fmt="{:.1f}%")
+    except (TypeError, ValueError):
+        pass
+    add("Impact cost", _g(t, "marketDeptOrderBook", "tradeInfo", "impactCost"), why="liquidity: lower is better",
+        fmt="{:.2f}%")
+    add("Margin rate (applicable margin)", _g(t, "marketDeptOrderBook", "valueAtRisk", "applicableMargin"),
+        why="exchange's view of price risk", fmt="{:.2f}%")
+    band = _g(q, "priceInfo", "pPriceBand")
+    add("Daily price band", band if band in (None, "", "No Band") else f"{band}%", why="maximum daily move allowed")
+    hi, hid = _g(q, "priceInfo", "weekHighLow", "max"), _g(q, "priceInfo", "weekHighLow", "maxDate")
+    lo, lod = _g(q, "priceInfo", "weekHighLow", "min"), _g(q, "priceInfo", "weekHighLow", "minDate")
+    if hi and hid:
+        add("52-week high (date)", f"₹{fmt_num(float(hi), 2)} on {hid}", why="when the peak was reached")
+    if lo and lod:
+        add("52-week low (date)", f"₹{fmt_num(float(lo), 2)} on {lod}", why="when the low was reached")
+    fno = _g(q, "info", "isFNOSec")
+    if fno is not None:
+        add("In futures & options segment", "Yes" if fno else "No", why="derivatives trading allowed")
+    basic = _g(q, "industryInfo", "basicIndustry")
+    if basic:
+        add("NSE industry classification", " › ".join(dict.fromkeys(x for x in [_g(q, "industryInfo", "macro"),
+                                                                               _g(q, "industryInfo", "sector"), basic] if x)),
+            why="official sector grouping")
+    return {"items": items, "url": url}
+
+
 # ------------------------------------------------------------------ gap list
 def find_gaps(payload: dict, metrics: dict, yahoo_items: list[dict]) -> list[str]:
     """Things Screener (and Yahoo, if it answered) did not give us, worth looking up elsewhere."""
@@ -237,7 +340,8 @@ def ai_lookup(company: dict, gaps: list[str], already_have: list[str], sites: tu
     prompt = (
         f"Company: {name} (NSE: {sym}, India). Industry: {company.get('industry') or company.get('broad_industry') or ''}.\n"
         f"Find the LATEST published value for each item in ITEMS. Use ONLY these websites as sources: "
-        f"{', '.join(sites)}. Do NOT use screener.in. For each value give the period it refers to and the exact "
+        f"{', '.join(sites)}. Search with queries such as \"{name} site:{sites[0]}\" and "
+        f"\"{sym} {sites[0]}\". Do NOT use screener.in. For each value give the period it refers to and the exact "
         f"page URL. If an item is not shown on these websites, leave it out - never estimate or guess. "
         f"You may add up to 3 extra data points from these websites that you judge important for analysing this "
         f"company and that are not in ALREADY_HAVE.\n\n"
@@ -281,50 +385,148 @@ def ai_lookup(company: dict, gaps: list[str], already_have: list[str], sites: tu
             "queries": out.get("queries", [])[:8]}
 
 
+def ai_lookup_per_site(company: dict, gaps: list[str], already_have: list[str], sites: tuple,
+                       strict: bool = True) -> dict:
+    """One search per website (in parallel), so each site gets its own chance instead of one mixed query."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    ai_sites = [x for x in sites if "yahoo" not in x and "nseindia" not in x]
+    if not ai_sites:
+        return {"items": [], "per_site": {}}
+    with ThreadPoolExecutor(max_workers=len(ai_sites)) as ex:
+        results = dict(zip(ai_sites, ex.map(lambda site: ai_lookup(company, gaps, already_have, (site,), strict),
+                                            ai_sites)))
+    items, notes, dropped_other, dropped_unconf = [], [], 0, 0
+    seen = {m.lower() for m in already_have}
+    for site, r in results.items():
+        name = SITE_NAMES.get(site, site)
+        if r.get("error"):
+            notes.append(f"{name}: {r['error'][:140]}")
+        got = 0
+        for it in r.get("items", []):
+            key = it["metric"].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(it)
+            got += 1
+        dropped_other += r.get("dropped_other_sites", 0)
+        dropped_unconf += r.get("dropped_unconfirmed", 0)
+        if not r.get("error"):
+            notes.append(f"{name}: {got} value(s) found" + (
+                f", {r.get('dropped_unconfirmed', 0)} discarded (page not in search results)"
+                if r.get("dropped_unconfirmed") else ""))
+    return {"items": items, "notes": notes, "dropped_other_sites": dropped_other, "dropped_unconfirmed": dropped_unconf}
+
+
 # ------------------------------------------------------------------ main entry
-def collect_supplementary(payload: dict, metrics: dict, use_ai: bool = True) -> dict:
-    """Gather supplementary data for one report. Never raises."""
+def collect_supplementary(payload: dict, metrics: dict, use_ai: bool = True, company_id: Optional[int] = None) -> dict:
+    """Gather supplementary data for one company: Yahoo Finance + NSE + (AI search of) Value Research,
+    Investing.com and Macrotrends. Only figures Screener does not show. Never raises."""
+    from concurrent.futures import ThreadPoolExecutor
+
     s = get_settings()
     meta = payload.get("meta", {})
     company = {k: meta.get(k) for k in ("name", "nse_symbol", "bse_code", "industry", "broad_industry")}
-    out: dict = {"enabled": s.external_enabled, "fetched_at": datetime.now(timezone.utc).isoformat(),
+    out: dict = {"version": CACHE_VERSION, "enabled": s.external_enabled,
+                 "fetched_at": datetime.now(timezone.utc).isoformat(),
                  "links": source_links(company["name"], company["nse_symbol"], company["bse_code"]),
                  "items": [], "estimates": [], "notes": []}
     if not s.external_enabled:
         out["notes"].append("Supplementary sources are switched off (EXTERNAL_SOURCES_ENABLED=false).")
         return out
 
-    yahoo_items: list[dict] = []
-    if any("yahoo" in d for d in s.external_sites):
-        try:
-            y = fetch_yahoo(company["nse_symbol"], company["bse_code"],
-                            is_lender=metrics.get("company_type") == "bank_or_nbfc")
-        except Exception as e:  # noqa: BLE001
-            y = {"error": f"{type(e).__name__}: {e}"}
+    lender = metrics.get("company_type") == "bank_or_nbfc"
+    from analysis.valueresearch import fetch_valueresearch
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        fy = ex.submit(fetch_yahoo, company["nse_symbol"], company["bse_code"], lender) \
+            if any("yahoo" in d for d in s.external_sites) else None
+        fn = ex.submit(fetch_nse, company["nse_symbol"])
+        fv = ex.submit(fetch_valueresearch, company["name"] or "", company["nse_symbol"], company["bse_code"],
+                       company_id) if any("valueresearch" in d for d in s.external_sites) else None
+        y = _safe_result(fy)
+        n = _safe_result(fn)
+        v = _safe_result(fv)
+
+    direct: list[dict] = []
+    if v is not None:
+        if v.get("items"):
+            direct += v["items"]
+            out["notes"].append(f"Value Research Online: {len(v['items'])} value(s) read from its stock page "
+                                f"({v.get('how')})")
+            for ln in out["links"]:
+                if ln["site"] == "Value Research Online":
+                    ln["url"], ln["note"] = v["url"], "stock page: VR rating scores, returns, valuation"
+        else:
+            out["notes"].append(f"Value Research Online page: {v.get('error')}")
+    if y is not None:
         if y.get("error"):
             out["notes"].append(f"Yahoo Finance: {y['error']}")
         else:
-            yahoo_items = y["items"]
-            out["items"] += y["items"]
+            direct += y["items"]
             out["estimates"] += y["estimates"]
+            out["notes"].append(f"Yahoo Finance: {len(y['items'])} value(s) read")
+    if n.get("error"):
+        out["notes"].append(f"NSE: {n['error']}")
+    else:
+        direct += n["items"]
+        out["notes"].append(f"NSE: {len(n['items'])} value(s) read")
+    out["items"] += direct
 
     if use_ai:
-        gaps = find_gaps(payload, metrics, yahoo_items)
+        gaps = find_gaps(payload, metrics, direct)
         out["gaps_requested"] = gaps
-        have = [r["name"] for r in payload.get("summary_ratios", [])] + [i["metric"] for i in yahoo_items]
+        have = [r["name"] for r in payload.get("summary_ratios", [])] + [i["metric"] for i in direct]
         try:
-            ai = ai_lookup(company, gaps, have, s.external_sites, strict=s.external_strict)
+            ai = ai_lookup_per_site(company, gaps, have, s.external_sites, strict=s.external_strict)
         except Exception as e:  # noqa: BLE001
-            ai = {"items": [], "error": f"{type(e).__name__}: {e}"}
-        if ai.get("error"):
-            out["notes"].append(f"AI lookup: {ai['error']}")
+            ai = {"items": [], "notes": [f"AI search: {type(e).__name__}: {e}"]}
         out["items"] += ai.get("items", [])
+        out["notes"] += ai.get("notes", [])
         if ai.get("dropped_other_sites"):
             out["notes"].append(f"{ai['dropped_other_sites']} value(s) from websites outside the approved list "
                                 f"were discarded.")
-        if ai.get("dropped_unconfirmed"):
-            out["notes"].append(f"{ai['dropped_unconfirmed']} value(s) were discarded because the search results did "
-                                f"not include the website they were said to come from (EXTERNAL_STRICT=true).")
+    else:
+        out["notes"].append("Value Research / Investing.com / Macrotrends need Gemini (AI search); not used.")
+    # list the sources in a fixed order: NSE, Value Research, Investing.com, Macrotrends, Yahoo Finance
+    order = {"NSE": 0, "Value Research Online": 1, "Investing.com": 2, "Macrotrends": 3, "Yahoo Finance": 4}
+    out["items"].sort(key=lambda i: order.get(i.get("source"), 9))
+    out["sources_used"] = sorted({i["source"] for i in out["items"] + out["estimates"]}, key=lambda x: order.get(x, 9))
     if not out["items"] and not out["estimates"]:
         out["notes"].append("No supplementary values could be retrieved this time; the links below still work.")
+    return out
+
+
+def _safe_result(fut) -> Optional[dict]:
+    if fut is None:
+        return None
+    try:
+        return fut.result()
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+def get_supplementary(payload: dict, metrics: dict, company_id: Optional[int], use_ai: bool = True,
+                      max_age_hours: float = 24, force: bool = False) -> dict:
+    """Cached version of collect_supplementary(): reuse a lookup younger than `max_age_hours`.
+
+    The result is stored in the external_data table, separate from the Screener tables.
+    """
+    from core import repository as repo
+
+    if company_id and not force:
+        try:
+            cached = repo.latest_external(company_id, max_age_hours)
+            if cached and cached.get("version") == CACHE_VERSION and (cached.get("items") or cached.get("estimates")):
+                cached["from_cache"] = True
+                return cached
+        except Exception as e:  # noqa: BLE001 - table missing (migration not run) or DB issue
+            log.warning("external_data cache unavailable: %s", e)
+    out = collect_supplementary(payload, metrics, use_ai=use_ai, company_id=company_id)
+    if company_id and (out.get("items") or out.get("estimates")):
+        try:
+            repo.save_external(company_id, out)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Could not store external data: %s", e)
     return out

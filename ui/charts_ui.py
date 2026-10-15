@@ -6,7 +6,7 @@ from plotly.subplots import make_subplots
 
 from analysis.metrics import find_series
 
-NAVY, ORANGE, GREY, TEAL = "#0B3C5D", "#E8710A", "#9CA3AF", "#1B998B"
+NAVY, ORANGE, GREY, TEAL = "#1C4DA0", "#FFA41C", "#9AA3AF", "#12783C"  # Value Research palette
 
 # unit shown above each chart in the UI (the numbers plotted are exactly what Screener reports)
 UNITS = {"price": "₹ per share", "annual": "₹ crore", "quarterly": "₹ crore", "returns": "percent (%)",
@@ -14,11 +14,11 @@ UNITS = {"price": "₹ per share", "annual": "₹ crore", "quarterly": "₹ cror
 
 
 def _layout(fig, title: str, height: int = 320):
-    fig.update_layout(title=dict(text=title, font=dict(size=15, color="#1D4ED8")), height=height,
-                      margin=dict(l=12, r=12, t=50, b=12), font=dict(family="Inter, sans-serif"),
+    fig.update_layout(title=dict(text=title, font=dict(size=15, color="#163A5F")), height=height,
+                      margin=dict(l=12, r=12, t=50, b=12), font=dict(family="Segoe UI, Roboto, Arial, sans-serif", color="#212529"),
                       legend=dict(orientation="h", y=-0.18), plot_bgcolor="white", hovermode="x unified")
     fig.update_xaxes(showgrid=False)
-    fig.update_yaxes(gridcolor="#EEF2F7")
+    fig.update_yaxes(gridcolor="#F0ECE6")
     return fig
 
 
@@ -145,6 +145,72 @@ def forecast_charts(forecast: dict) -> list[tuple]:
                                  line=dict(color=NAVY, width=2.4)))
         fig.add_trace(go.Scatter(x=fx, y=[last] + b["base"], name="Projection (base case)", mode="lines+markers",
                                  line=dict(color=ORANGE, width=2.4, dash="dash")))
+        if b.get("timesfm"):
+            fig.add_trace(go.Scatter(x=fx, y=[last] + b["timesfm"]["base"], name="TimesFM AI forecast",
+                                     mode="lines+markers", line=dict(color="#12783C", width=2, dash="dot")))
         _layout(fig, f"{b['name']}: reported and projected", height=330)
         out.append((fig, "₹ per share" if b["unit"] == "INR" else "₹ crore"))
     return out
+
+
+RANGE_DAYS = {"1M": 31, "6M": 183, "1Yr": 366, "3Yr": 1096, "5Yr": 1827, "Max": None}
+
+
+def _cut(dates: list, rng: str) -> int:
+    days = RANGE_DAYS.get(rng)
+    if not days or not dates:
+        return 0
+    from datetime import date, timedelta
+
+    last = date.fromisoformat(str(dates[-1])[:10])
+    start = last - timedelta(days=days)
+    for i, d in enumerate(dates):
+        if date.fromisoformat(str(d)[:10]) >= start:
+            return i
+    return 0
+
+
+def price_range_chart(prices: list[dict], rng: str = "1Yr"):
+    """Screener-style price chart with 50/200-day averages and volume, for a chosen period."""
+    pts = [p for p in prices if p.get("close") is not None]
+    if not pts:
+        return None
+    pts = pts[_cut([p["date"] for p in pts], rng):]
+    d = [p["date"] for p in pts]
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.78, 0.22], vertical_spacing=0.04)
+    fig.add_trace(go.Scatter(x=d, y=[p["close"] for p in pts], name="Price on NSE", line=dict(color=NAVY, width=1.8)),
+                  row=1, col=1)
+    if any(p.get("dma50") for p in pts):
+        fig.add_trace(go.Scatter(x=d, y=[p.get("dma50") for p in pts], name="50 DMA",
+                                 line=dict(color=ORANGE, width=1.1)), row=1, col=1)
+    if any(p.get("dma200") for p in pts):
+        fig.add_trace(go.Scatter(x=d, y=[p.get("dma200") for p in pts], name="200 DMA",
+                                 line=dict(color=GREY, width=1.1, dash="dash")), row=1, col=1)
+    if any(p.get("volume") for p in pts):
+        fig.add_bar(x=d, y=[p.get("volume") for p in pts], name="Volume", marker_color="#C9D7F0", row=2, col=1)
+    return _layout(fig, f"Share price · {rng}", height=420)
+
+
+def pe_range_chart(pe_history: dict, rng: str = "1Yr"):
+    pe = (pe_history or {}).get("Price to Earning") or []
+    if not pe:
+        return None
+    pe = pe[_cut([a for a, _ in pe], rng):]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=[a for a, _ in pe], y=[b for _, b in pe], name="P/E", line=dict(color=NAVY, width=1.8)))
+    med = (pe_history or {}).get("Median PE") or []
+    if med and med[-1][1]:
+        fig.add_hline(y=float(med[-1][1]), line_dash="dash", line_color=ORANGE,
+                      annotation_text=f"Median P/E {float(med[-1][1]):.1f}")
+    eps = (pe_history or {}).get("EPS") or []
+    if eps:
+        eps = eps[_cut([a for a, _ in eps], rng):]
+    return _layout(fig, f"Price to earnings · {rng}", height=380)
+
+
+def allocation_donut(labels: list[str], values: list[float]):
+    fig = go.Figure(go.Pie(labels=labels, values=values, hole=0.55, sort=True,
+                           marker=dict(colors=[NAVY, ORANGE, TEAL, "#163A5F", "#7FA3DE", "#C77700", "#5BAE7C",
+                                               "#9AA3AF", "#3D6DC0", "#FFC56B"]),
+                           textinfo="percent", hovertemplate="%{label}: ₹%{value:,.0f}<extra></extra>"))
+    return _layout(fig, "Allocation by current value", height=330)

@@ -39,7 +39,7 @@ def fetch_and_store(company: dict, basis: str, user_id: Optional[str], *, includ
 def refresh_news(company: dict) -> list[dict]:
     from analysis.news import fetch_news
 
-    items = fetch_news(company["name"], company.get("nse_symbol"))
+    items = fetch_news(company["name"], company.get("nse_symbol"), bse_code=company.get("bse_code"))
     if items:
         repo.upsert_news(company["id"], items)
     return repo.list_news(company["id"])
