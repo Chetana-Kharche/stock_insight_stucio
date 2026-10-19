@@ -27,6 +27,8 @@ from analysis.forecast import (build_forecast, fiscal_label, forecast_tables, ou
 from analysis.metrics import compute_metrics, find_series
 from analysis.scorecard import build_scorecard
 from core.config import get_settings
+from analysis import guardrails as G
+from analysis import health as HL
 from core.utils import fmt_num, fmt_pct, pct_change, safe_div
 
 log = logging.getLogger(__name__)
@@ -41,6 +43,10 @@ DISCLAIMER = (
     "future results. Analyst targets or ratings quoted from other websites are third-party views, not ours. "
     "This report is for educational and informational purposes only and is NOT investment advice, a research "
     "report under SEBI (Research Analysts) Regulations, or a recommendation to buy, sell or hold any security. "
+    "Every number in the report text is automatically checked against the source data and values from other "
+    "websites are range-checked; a log of these checks is kept with every report. The checks confirm the text matches "
+    "the data, not that "
+    "the source data itself is correct. "
     "The stance and score reflect a mechanical scorecard, not a price target. Figures may contain errors from "
     "the source or the parsing process; verify with company filings before making any decision. Consult a "
     "SEBI-registered adviser for investment advice."
@@ -69,7 +75,9 @@ SYSTEM_PROMPT = (
     "You are a senior sell-side equity research analyst at an Indian brokerage writing a company update. "
     "Write in a crisp, professional, factual tone (like ICICI Securities / Kotak / Motilal Oswal notes). "
     "STRICT RULES: (1) Use ONLY numbers present in the provided DATA JSON; never invent or estimate figures "
-    "yourself and never use outside knowledge for numbers. (2) Always mention the period for any figure "
+    "yourself and never use outside knowledge for numbers. Copy each number from DATA (you may round it); do not "
+    "calculate new ratios, differences or totals yourself. Every number you write is checked automatically "
+    "against DATA and sentences with numbers that are not in DATA are deleted. (2) Always mention the period for any figure "
     "(e.g. 'Q1FY27' or 'Jun 2026 quarter', 'FY26 / Mar 2026'). (3) Amounts are INR crore unless stated. "
     "(4) Do NOT give buy/sell/hold advice and do NOT give a target price of your own; the stance is provided "
     "and must be explained, not changed. (5) SOURCES: Screener.in is the main source. DATA may also contain "
@@ -95,6 +103,7 @@ SECTION_PLAN = [
     "Valuation",
     "Shareholding trends",
     "News and corporate developments",
+    "Financial health and warning signs",
     "Future outlook and model projections (next three fiscal years)",
     "Key monitorables and what could change the view",
 ]
@@ -319,8 +328,26 @@ def _supplementary_for_llm(sup: dict) -> dict:
 
 
 # ------------------------------------------------------------------ rule-based narrative (fallback)
+def _health_sentences(h: Optional[dict]) -> str:
+    """Plain sentences for the rule-based text, built only from the computed health figures."""
+    if not h:
+        return ""
+    out = []
+    p = h.get("piotroski") or {}
+    if p.get("available"):
+        out.append(f"Piotroski F-score for {p['year']}: {p['score']} of {p['out_of']} tests passed ({p['band']}).")
+    flags = (h.get("red_flags") or {}).get("flags") or []
+    checked = (h.get("red_flags") or {}).get("checked") or []
+    if flags:
+        out.append(f"{len(flags)} warning sign(s) out of {len(checked)} checks: " +
+                   "; ".join(f"{f['flag'].lower()} ({f['evidence']})" for f in flags[:5]) + ".")
+    elif checked:
+        out.append(f"None of the {len(checked)} warning-sign checks fired.")
+    return " ".join(out)
+
+
 def _rule_based_narrative(m: dict, sc: dict, news: list[dict], announcements: list[dict],
-                          fc: Optional[dict] = None, sup: Optional[dict] = None) -> dict:
+                          fc: Optional[dict] = None, sup: Optional[dict] = None, health: Optional[dict] = None) -> dict:
     meta, g, q, p, b, c, v = (m["meta"], m["growth"], m["quarterly"], m["profitability"],
                               m["balance_sheet"], m["cash_flow"], m["valuation"])
     name = meta.get("name") or "The company"
@@ -394,6 +421,9 @@ def _rule_based_narrative(m: dict, sc: dict, news: list[dict], announcements: li
         items = [a["title"] for a in announcements[:3]] + [n["title"] for n in news[:3]]
         sections.append({"heading": "News and corporate developments",
                          "body": "Recent items: " + " | ".join(items)})
+    hs = _health_sentences(health)
+    if hs:
+        sections.append({"heading": "Financial health and warning signs", "body": hs})
     outlook = outlook_sentences(fc or {})
     if outlook:
         sections.append({"heading": "Future outlook and model projections",
@@ -413,7 +443,7 @@ def _rule_based_narrative(m: dict, sc: dict, news: list[dict], announcements: li
         "key_strengths": m.get("pros") or [],
         "key_risks": m.get("cons") or [],
         "monitorables": [f"Next results date: {meta.get('upcoming_result_date')}"] if meta.get("upcoming_result_date") else [],
-        "stance_rationale": f"Score {sc['score']:.0f}/100 from the six-factor scorecard.",
+        "stance_rationale": f"{sc['stance']}: score {sc['score']:.0f}/100 from the six-factor scorecard.",
         "news_takeaways": rule_based_insights(news, meta.get("name") or ""),
     }
 
@@ -431,6 +461,12 @@ def build_report(payload: dict, news: list[dict] | None = None, use_llm: bool = 
     m["about"] = payload.get("about", "")
     sc = build_scorecard(m)
     announcements = (payload.get("documents") or {}).get("announcements", [])[:10]
+    checks = G.CheckLog()
+    say("Checking the Screener data for consistency…")
+    try:
+        G.check_input_data(payload, m, checks)
+    except Exception as e:  # noqa: BLE001 - a check must never stop the report
+        checks.add("Input data (Screener)", "Consistency checks ran", G.WARN, f"{type(e).__name__}: {e}")
 
     say("Projecting the next three years with statistical models (scikit-learn, SciPy)…")
     try:
@@ -438,6 +474,7 @@ def build_report(payload: dict, news: list[dict] | None = None, use_llm: bool = 
     except Exception as e:  # noqa: BLE001 - the report must still be produced
         log.warning("Forecast failed: %s", e)
         fc = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    G.check_forecast(fc, checks)
     if fc.get("ok"):
         fc["tables"] = forecast_tables(fc)
 
@@ -449,6 +486,11 @@ def build_report(payload: dict, news: list[dict] | None = None, use_llm: bool = 
     else:
         sup = {"enabled": False, "items": [], "estimates": [], "links": [],
                "notes": ["Other websites were not used for this report (switched off by the user)."]}
+    say("Checking the figures from other websites (plausible range, cross-check with Screener)…")
+    sup = G.check_supplementary(sup, m, checks)
+    say("Computing financial health: working capital, earnings quality, cash flow, Piotroski score, warning signs…")
+    health = HL.build_health(payload, m, sup)
+    G.check_health(health, checks)
 
     data_for_llm = {
         "company": m["meta"],
@@ -471,8 +513,10 @@ def build_report(payload: dict, news: list[dict] | None = None, use_llm: bool = 
         "peers": [{"name": p["name"], **p["values"]} for p in (payload.get("peers") or {}).get("rows", [])[:8]],
         "recent_exchange_announcements": [{"date": a.get("date"), "title": a["title"], "summary": a.get("summary")}
                                           for a in announcements],
+        "news_headline_count": len(news),
         "recent_news_headlines": [{"date": str(n.get("published_at") or "")[:10], "title": n["title"],
                                    "website": n.get("source")} for n in _balanced(news, 4, 48)],
+        "financial_health": HL.for_llm(health),
         "model_projections": _forecast_for_llm(fc),
         "supplementary_data_other_websites": _supplementary_for_llm(sup),
     }
@@ -488,6 +532,9 @@ def build_report(payload: dict, news: list[dict] | None = None, use_llm: bool = 
             "In 'Future outlook and model projections' walk through model_projections for revenue, net profit and "
             "EPS (base case, low-high range, growth per year, confidence, any one-off jump that was adjusted) and "
             "what would have to go right or wrong, using only facts in DATA.\n"
+            "In 'Financial health and warning signs' explain financial_health in plain words: the Piotroski F-score "
+            "(score out of the tests that could be done), each warning sign with its evidence, working-capital days, "
+            "cash flow versus profit and the DuPont split of ROE. If no warning sign fired, say so.\n"
             "Wherever supplementary_data_other_websites fills something Screener lacks (for a bank: NIM, NPAs, "
             "CASA, capital adequacy), use it in the relevant section and name the website.\n"
             "key_strengths / key_risks / monitorables: 4-6 bullets each, specific and numeric where the data allows.\n"
@@ -497,13 +544,31 @@ def build_report(payload: dict, news: list[dict] | None = None, use_llm: bool = 
             f"DATA:\n{json.dumps(data_for_llm, default=str)}"
         )
         try:
-            narrative = llm.generate_json(prompt, Narrative, system=SYSTEM_PROMPT)
+            narrative = llm.generate_json(prompt, Narrative, system=SYSTEM_PROMPT, temperature=0.2)
             model_used = llm.model_name()
         except Exception as e:  # noqa: BLE001
             llm_error = f"{type(e).__name__}: {e}"
             log.warning("LLM narrative failed, using rule-based text: %s", e)
-    if narrative is None:
-        narrative = _rule_based_narrative(m, sc, news, announcements, fc, sup)
+    narrative_check = "rule-based"
+    if narrative is not None:
+        say("Fact-checking every number and sentence in the AI text against the data…")
+
+        def _correct(narr: dict, issues: list[dict]) -> dict:
+            return llm.generate_json(G.correction_prompt(narr, issues) + "\n\nDATA:\n" +
+                                     json.dumps(data_for_llm, default=str), Narrative, system=SYSTEM_PROMPT,
+                                     temperature=0.0)
+
+        known = list(SOURCE_NAMES) + sorted({i.get("source") for i in sup.get("items", []) + sup.get("estimates", [])
+                                             if i.get("source")}) + ["Screener", "NSE", "BSE", "exchange", "filing"]
+        narrative, narrative_check = G.guard_narrative(
+            narrative, data_for_llm, sc["stance"], sc["score"], known,
+            fallback=lambda: _rule_based_narrative(m, sc, news, announcements, fc, sup, health),
+            log=checks, corrector=_correct)
+        if narrative_check == "replaced":
+            model_used = "rule-based (AI text failed the fact-check)"
+    else:
+        narrative = _rule_based_narrative(m, sc, news, announcements, fc, sup, health)
+        G.guard_rule_based(narrative, data_for_llm, sc["score"], checks)
 
     report = {
         "report_version": 3,
@@ -553,8 +618,11 @@ def build_report(payload: dict, news: list[dict] | None = None, use_llm: bool = 
         "metrics": _round(m),
         "forecast": _round(fc, 4),
         "supplementary": sup,
+        "health": health,
         "sources": {"main": "Screener.in",
                     "supplementary_used": sorted({i["source"] for i in sup.get("items", []) + sup.get("estimates", [])})},
         "disclaimer": DISCLAIMER,
+        "narrative_check": narrative_check,
+        "quality_checks": checks.to_dict(),
     }
     return report

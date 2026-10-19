@@ -258,6 +258,28 @@ create table if not exists public.company_links (
     primary key (company_id, site)
 );
 
+-- ---------- Audit log: the automatic checks run on every analysis report ----------
+create table if not exists public.report_quality_checks (
+    id                 bigserial primary key,
+    report_id          bigint not null references public.analysis_reports(id) on delete cascade,
+    company_id         bigint not null references public.companies(id) on delete cascade,
+    user_id            uuid references public.profiles(id) on delete set null,
+    narrative_outcome  text,          -- clean | corrected | trimmed | replaced | rule-based
+    model              text,          -- AI model used for the text, or rule-based
+    total_checks       int,
+    passed             int,
+    fixed              int,
+    warnings           int,
+    failed             int,
+    removed_sentences  int,
+    checks             jsonb not null,               -- every check: group, check, status, detail
+    removed_text       jsonb not null default '[]',  -- AI sentences removed and why
+    removed_values     jsonb not null default '[]',  -- website values removed and why
+    created_at         timestamptz not null default now()
+);
+create index if not exists idx_quality_report on public.report_quality_checks (report_id);
+create index if not exists idx_quality_company on public.report_quality_checks (company_id, created_at desc);
+
 -- =====================================================================
 -- Row Level Security
 -- The Streamlit app connects with the database connection string (server side),
@@ -281,6 +303,7 @@ alter table public.watchlist          enable row level security;
 alter table public.portfolio_holdings enable row level security;
 alter table public.external_data      enable row level security;
 alter table public.company_links      enable row level security;
+alter table public.report_quality_checks enable row level security;
 
 do $$
 begin
@@ -314,6 +337,9 @@ begin
   end if;
   if not exists (select 1 from pg_policies where policyname = 'own_runs') then
     create policy own_runs on public.scrape_runs for select to authenticated using (user_id = auth.uid());
+  end if;
+  if not exists (select 1 from pg_policies where policyname = 'own_quality_checks') then
+    create policy own_quality_checks on public.report_quality_checks for select to authenticated using (user_id = auth.uid());
   end if;
   if not exists (select 1 from pg_policies where policyname = 'own_reports') then
     create policy own_reports on public.analysis_reports for select to authenticated using (user_id = auth.uid());

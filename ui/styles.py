@@ -95,6 +95,8 @@ hr { margin: 1rem 0 !important; border-color: var(--vr-line) !important; }
 .st-key-nav div[data-testid="stButtonGroup"], .st-key-nav div[data-testid="stButtonGroup"] > div {
   flex-wrap: nowrap !important; overflow-x: auto; scrollbar-width: none; }
 .st-key-nav button { flex: 0 0 auto !important; padding: 10px 11px 8px !important; }
+/* fact-check line under the report headline */
+.sis-factcheck { margin: 6px 0 2px; font-size: .84rem; font-weight: 600; color: #12783C; }
 /* the big Analysis Report button above the company sub-tabs */
 .st-key-go_report button { min-height: 2.9rem; border-radius: 10px !important; box-shadow: 0 4px 12px rgba(28,77,160,.25); }
 .st-key-go_report button p { font-size: 1.02rem !important; font-weight: 700 !important; letter-spacing: .02em; }

@@ -114,7 +114,7 @@ _schema_checked = False
 
 REQUIRED_TABLES = ("profiles", "companies", "scrape_runs", "financial_facts", "summary_ratios", "peers",
                    "company_documents", "price_history", "news_items", "analysis_reports", "chat_messages", "rag_sync",
-                   "user_notes", "watchlist", "portfolio_holdings", "external_data", "company_links")
+                   "user_notes", "watchlist", "portfolio_holdings", "external_data", "company_links", "report_quality_checks")
 
 
 def missing_tables() -> list[str]:

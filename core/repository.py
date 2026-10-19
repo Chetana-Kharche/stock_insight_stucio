@@ -280,7 +280,54 @@ def save_report(company_id: int, run_id: int | None, user_id: str | None, report
            values (%s,%s,%s,%s,%s,%s,%s) returning id""",
         (company_id, run_id, user_id, report.get("stance"), report.get("score"), report.get("model"),
          db.jsonb(report)))
-    return int(row["id"])
+    rid = int(row["id"])
+    try:
+        try:
+            save_quality_checks(rid, company_id, user_id, report)
+        except Exception as e:  # noqa: BLE001 - table not created yet (older database): create it, retry once
+            if "does not exist" not in str(e):
+                raise
+            db._schema_checked = False
+            db.ensure_schema()
+            save_quality_checks(rid, company_id, user_id, report)
+    except Exception as e:  # noqa: BLE001 - the audit log must never block saving the report
+        import logging
+
+        logging.getLogger(__name__).warning("Could not store the report check log: %s", e)
+    return rid
+
+
+def save_quality_checks(report_id: int, company_id: int, user_id: str | None, report: dict) -> None:
+    """Audit log of the automatic checks for one report (shown in Profile → System status)."""
+    q = report.get("quality_checks") or {}
+    if not q:
+        return
+    s = q.get("summary") or {}
+    db.execute(
+        """insert into report_quality_checks (report_id, company_id, user_id, narrative_outcome, model, total_checks,
+               passed, fixed, warnings, failed, removed_sentences, checks, removed_text, removed_values)
+           values (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        (report_id, company_id, user_id, report.get("narrative_check"), report.get("model"), s.get("total"),
+         s.get("pass"), s.get("fixed"), s.get("warn"), s.get("fail"), s.get("removed_sentences"),
+         db.jsonb(q.get("checks") or []), db.jsonb(q.get("removed_text") or []),
+         db.jsonb((report.get("supplementary") or {}).get("removed_by_checks") or [])))
+
+
+def list_quality_checks(limit: int = 50, company_id: int | None = None) -> list[dict]:
+    where, params = ["1=1"], []
+    if company_id:
+        where.append("q.company_id = %s")
+        params.append(company_id)
+    params.append(limit)
+    return db.fetch_all(
+        f"""select q.id, q.report_id, q.created_at, c.name as company_name, c.nse_symbol, q.narrative_outcome, q.model,
+                   q.total_checks, q.passed, q.fixed, q.warnings, q.failed, q.removed_sentences
+            from report_quality_checks q join companies c on c.id = q.company_id
+            where {' and '.join(where)} order by q.created_at desc limit %s""", params)
+
+
+def get_quality_checks(check_id: int) -> Optional[dict]:
+    return db.fetch_one("select * from report_quality_checks where id = %s", (check_id,))
 
 
 def list_reports(user_id: str | None = None, company_id: int | None = None, limit: int = 100) -> list[dict]:

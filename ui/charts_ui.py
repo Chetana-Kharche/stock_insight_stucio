@@ -140,7 +140,7 @@ def forecast_charts(forecast: dict) -> list[tuple]:
         fig.add_trace(go.Scatter(x=fx, y=[last] + b["high"], mode="lines", line=dict(width=0), showlegend=False,
                                  hoverinfo="skip"))
         fig.add_trace(go.Scatter(x=fx, y=[last] + b["low"], mode="lines", line=dict(width=0), fill="tonexty",
-                                 fillcolor="rgba(232,113,10,0.16)", name="80% range", hoverinfo="skip"))
+                                 fillcolor="rgba(232,113,10,0.16)", name="Likely range", hoverinfo="skip"))
         fig.add_trace(go.Scatter(x=hx, y=[v for _, v in hist], name="Reported", mode="lines+markers",
                                  line=dict(color=NAVY, width=2.4)))
         fig.add_trace(go.Scatter(x=fx, y=[last] + b["base"], name="Projection (base case)", mode="lines+markers",

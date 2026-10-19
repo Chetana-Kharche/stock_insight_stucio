@@ -324,6 +324,23 @@ def _series_block(name: str, unit: str, pts: list[tuple[str, Optional[float]]], 
     return res
 
 
+def reader_text(fc: dict) -> str:
+    """The key numbers a reader wants from the projection, in one or two lines (no method talk)."""
+    parts = []
+    for b in fc.get("annual", []):
+        if not b.get("ok"):
+            continue
+        u = b["unit"]
+        end = fiscal_label(b["labels"][-1], True)
+        val = f"₹{_n(b['base'][-1], u)}" + ("" if u == "INR" else " crore")
+        g = f", about {b['cagr_pct']:.1f}% a year" if b.get("cagr_pct") is not None else ""
+        parts.append(f"{b['name']} {val} by {end}{g}")
+    if not parts:
+        return ""
+    return ("Expected path if past trends continue: " + "; ".join(parts) +
+            f". Confidence: {fc.get('confidence', '–')}. These are estimates, not guidance or a price forecast.")
+
+
 def method_text() -> str:
     from analysis import timesfm_model
 

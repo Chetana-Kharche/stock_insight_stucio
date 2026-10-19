@@ -13,6 +13,7 @@ from core.config import get_settings
 from rag.ragflow_client import RagFlowClient
 from rag.sync import sync_company
 from ui import components as C
+from ui import html as H
 
 
 def render(embedded: bool = False) -> None:
@@ -131,3 +132,36 @@ def render(embedded: bool = False) -> None:
         pending = repo.companies_needing_rag_sync() if db.ping() else []
         st.caption(f"{len(pending)} companies have newer data than RAGFlow. "
                    "Run `python -m scripts.rag_sync_all --loop 15` to keep everything synced continuously.")
+
+    # ---- audit log of report checks (guardrails), stored in report_quality_checks
+    C.section("Report check log", "Every analysis report is checked automatically before it is shown; the result "
+              "is saved here for review (not printed in the PDF)", color="green")
+    try:
+        logs = repo.list_quality_checks(limit=50)
+    except Exception as e:  # noqa: BLE001 - table created on the next app start
+        st.caption(f"Check log not available yet ({type(e).__name__}). Restart the app to create the table.")
+        logs = []
+    if not logs:
+        st.caption("No reports generated yet.")
+    else:
+        from analysis.guardrails import OUTCOME_TEXT
+
+        rows = [[str(r["created_at"])[:16].replace("T", " "), f"{r['company_name']} ({r.get('nse_symbol') or '–'})",
+                 OUTCOME_TEXT.get(r.get("narrative_outcome") or "", r.get("narrative_outcome") or ""),
+                 f"{r['total_checks']}", f"{r['fixed']}", f"{r['warnings']} / {r['failed']}",
+                 f"{r['removed_sentences']}"] for r in logs]
+        st.html(H.generic_table(["Generated", "Company", "AI text outcome", "Checks", "Fixed", "Warn / fail",
+                                 "Removed"], rows))
+        pick = st.selectbox("Open the full log of a report", [None] + [r["id"] for r in logs],
+                            format_func=lambda i: "—" if i is None else next(
+                                f"{str(r['created_at'])[:16].replace('T', ' ')} · {r['company_name']}"
+                                for r in logs if r["id"] == i), key="qc_pick")
+        if pick:
+            full = repo.get_quality_checks(pick) or {}
+            st.html(H.generic_table(["Result", "Area", "Check", "Detail"],
+                                    [[c["status"], c["group"], c["check"], c.get("detail") or ""]
+                                     for c in full.get("checks") or []]))
+            for r in full.get("removed_text") or []:
+                st.markdown(f"- **{r['where']}** — “{r['text']}”  \n  _reason: {r['reason']}_")
+            for r in full.get("removed_values") or []:
+                st.markdown(f"- **{r['metric']} = {r['value']}** ({r['source']})  \n  _reason: {r['reason']}_")

@@ -199,13 +199,13 @@ def forecast_chart(forecast: dict, size=(6.6, 2.5)) -> Optional[dict]:
         fx = [hx[-1] + i for i in range(len(b["base"]) + 1)]
         ax.plot(hx, [v / d for _, v in hist], color=NAVY, lw=1.8, marker="o", ms=3, label="Reported")
         ax.plot(fx, [hist[-1][1] / d] + [v / d for v in b["base"]], color=ORANGE, lw=1.8, ls="--", marker="o", ms=3,
-                label="Projection")
+                label="Estimate")
         ax.fill_between(fx, [hist[-1][1] / d] + [v / d for v in b["low"]],
                         [hist[-1][1] / d] + [v / d for v in b["high"]], color=ORANGE, alpha=0.15, lw=0,
-                        label="80% range")
+                        label="Likely range")
         if b.get("timesfm"):
             ax.plot(fx, [hist[-1][1] / d] + [v / d for v in b["timesfm"]["base"]], color="#12783C", lw=1.4, ls=":",
-                    marker="s", ms=2.5, label="TimesFM")
+                    marker="s", ms=2.5, label="AI estimate (TimesFM)")
         labels = [_fy_short(l) for l, _ in hist] + [_fy_short(l, True) for l in b["labels"]]
         ax.set_xticks(range(len(labels)), labels, rotation=45, ha="right", fontsize=6)
         ax.set_title(f"{b['name']} ({unit})", fontsize=8)

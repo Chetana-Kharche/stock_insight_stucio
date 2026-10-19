@@ -175,6 +175,8 @@ def supplementary_table(items: list[dict], last_header: str = "Why it matters / 
                    "Value Research page": "read from its stock page"}.get(
                 it.get("via")) or ("found by AI search" + ("" if it.get("seen_in_search") else ", page not confirmed"))
             last = "; ".join(x for x in [it.get("why"), how] if x)
+            if it.get("flag"):
+                last += f" ⚠ {it['flag']}"
         body.append(f'<tr><td>{e(it["metric"])}</td><td class="val">{e(it["value"])}</td>'
                     f'<td>{e(it.get("period") or "–")}</td>'
                     f'<td><a class="sis-src" href="{e(it.get("url") or "#")}" target="_blank">{e(it.get("source") or "source")} ↗</a></td>'

@@ -74,6 +74,7 @@ class Settings:
     news_per_source: int = 15
     report_news_per_source: int = 5
     pdf_news_max: int = 70
+    quality_details_in_pdf: bool = False
 
     @property
     def llm_enabled(self) -> bool:
@@ -107,6 +108,7 @@ def get_settings() -> Settings:
         news_per_source=_int(_get_secret("NEWS_PER_SOURCE", "15"), 15),
         report_news_per_source=_int(_get_secret("REPORT_NEWS_PER_SOURCE", "5"), 5),
         pdf_news_max=_int(_get_secret("PDF_NEWS_MAX", "70"), 70),
+        quality_details_in_pdf=_bool(_get_secret("QUALITY_DETAILS_IN_PDF", "false"), False),
     )
 
 

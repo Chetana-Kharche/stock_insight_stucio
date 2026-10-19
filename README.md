@@ -160,6 +160,51 @@ Screener reports rupee amounts in **₹ crore** (1 crore = 1,00,00,000 = 10 mill
 
 The report shows the chart, the yearly and quarterly tables, P/E on projected EPS, the reliability table and each model's weight. These are extensions of past figures. They know nothing about management plans, interest rates, regulation or one-off events.
 
+## Financial health & warning signs (in the analysis report)
+
+Calculated by code from the stored Screener data (`analysis/health.py`), never by the AI:
+
+| Part | What it shows | Why it is in the report |
+|---|---|---|
+| Piotroski F-score | 9 yes/no tests (profit, cash flow, return on assets, debt, dilution, margin, asset turnover) | A widely used, published (Piotroski 2000) check of financial strength; easy to read as "x out of 9" |
+| Warning signs | Rules such as debtor days rising sharply, profit not turning into cash, debt growing much faster than equity, low interest cover, unusual tax rate, dilution, promoter selling, pledged shares, high NPA / low CRAR (banks) | The checks analysts run to spot accounting or balance-sheet stress early; each flag shows the numbers that triggered it |
+| Working capital days | Debtor, inventory, payable days, cash conversion cycle | Shows whether cash is getting stuck in the business |
+| Earnings quality | Other income share of profit, tax rate, interest coverage, cash flow ÷ profit | Shows whether profit comes from the core business and is backed by cash |
+| Cash flow & capex | Operating cash flow, capital spending, free cash flow, FCF margin by year | What is really left for dividends, debt repayment and growth |
+| DuPont ROE | Margin × asset turnover × leverage = ROE | Shows whether a high ROE comes from margins (good) or borrowing (riskier) |
+| Share price risk | Volatility, largest fall from a peak, beta | How bumpy the share has been |
+| Dividends & corporate actions | Dividend per share and payout by year, splits/bonus (Yahoo), buyback/bonus/split filings | Shareholder returns and capital changes |
+| Credit rating & documents | Latest ratings (CRISIL/ICRA/CARE…), annual reports, earnings-call files | Lets the reader check primary sources |
+
+Banks, NBFCs and insurers skip working capital, capex, interest cover and Piotroski (they do not apply to lenders).
+Left out on purpose: the **Altman Z-score** (needs current assets / liabilities, which Screener does not provide;
+an approximation could mislabel a company) and segment / guidance / contingent liabilities (only in annual-report PDFs).
+The per-model breakdown table of the projections was removed as too technical for readers.
+
+## Guardrails: how the report avoids invented or wrong information
+
+Every analysis report passes automatic checks (`analysis/guardrails.py`) before it is shown or exported.
+
+- **Readers** (app report and PDF) see one line under the headline, "All figures in this report were checked against
+  the source data", plus **Data notes** only when something affects how a number should be read (data older than
+  7 days, Screener figures that do not add up, websites that disagree).
+- **Reviewers** see the full log: in the app at the end of each report (closed box "How this report was checked") and
+  in **Profile → System status → Report check log**, which lists every report with its checks, fixes and removed text.
+- **Database:** the log is saved with each report in the table `report_quality_checks` (audit trail).
+- Set `QUALITY_DETAILS_IN_PDF=true` in `.env` to also print the full log in the PDF (for demos and reviews).
+
+| Area | What is checked | What happens when a check fails |
+|---|---|---|
+| Screener data | P/E = price ÷ TTM EPS, balance sheet balances, 4 quarters = TTM revenue, no negative revenue, price inside the 52-week range, data age | Shown as a warning; the data is never silently changed |
+| Other websites | Plausible range for each kind of figure (e.g. Gross NPA 0–40 %), cross-check with Screener's own P/E, P/B, ROE, ROCE, dividend yield, source link present, two websites disagreeing | AI-searched values that fail are **removed before the AI sees them**; values read directly are kept with a ⚠ flag |
+| Projections | low ≤ base ≤ high, no negative amounts, extreme growth, TimesFM far from the other models | Ranges re-ordered; warnings shown |
+| AI text: numbers | **Every number** Gemini writes must exist in the data it was given (rounding and crore / lakh-crore allowed) **and belong to the same kind of figure** (a profit number must come from a profit figure, not from a shareholding % that happens to match) | One correction round with Gemini → sentences still wrong are removed → if too much is wrong (or the headline/summary), the whole AI text is replaced by text built only from the data |
+| AI text: content | No buy/sell advice, no own target price or price promises, third-party targets must be attributed, projections must be called model projections, the stance must match the scorecard, every news point must name its website | Offending sentences removed; unlabelled projections get the label "Model projection:" |
+
+Tests with deliberately wrong AI text and website values: `python tests/test_guardrails.py`; the financial-health calculations are checked against hand calculations in `python tests/test_health.py` (or run all with `python -m pytest tests`).
+These checks confirm that the report matches its source data. They cannot prove the source data itself is right, so
+compare key figures with the company's filings before relying on them.
+
 ## Google TimesFM AI forecast (in the analysis report)
 
 [TimesFM](https://github.com/google-research/timesfm) is Google Research's pre-trained time-series forecasting model.
