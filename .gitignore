@@ -6,3 +6,10 @@ __pycache__/
 .streamlit/secrets.toml
 data/*.csv
 output/
+
+# extra virtual environments, local files
+.venv*/
+Claude outputs/
+*.zip
+*.pem
+*credentials*.txt

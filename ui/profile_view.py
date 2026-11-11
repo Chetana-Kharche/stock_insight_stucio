@@ -5,6 +5,7 @@ import pandas as pd
 import streamlit as st
 
 from core import repository as repo
+from core import billing
 from core.auth import AuthError, change_password, sign_out
 from ui import components as C
 from ui import html as H
@@ -68,19 +69,36 @@ def render() -> None:
                     st.success("Saved.")
     with right:
         with st.container(border=True):
-            C.subheading("Change password", color="green")
+            C.subheading("Account and plan", color="green")
+            st.markdown(f"**Username:** {prof.get('username') or '–'}  \n"
+                        f"**Mobile:** {prof.get('phone') or user.get('phone') or '–'}"
+                        f"{' (verified)' if prof.get('phone_verified') else ''}  \n"
+                        f"**Email:** {prof.get('email') or user.get('email') or '–'}")
+            acc = billing.access_for(uid)
+            if acc.source in ("monthly", "yearly"):
+                st.success(f"{acc.plan.title()} plan · active until {_fmt(acc.plan_expires_at)}")
+            elif acc.source == "free":
+                st.info("Your first report is free.")
+            else:
+                st.caption(acc.message)
+            if acc.credits:
+                st.caption(f"Single-report credits: {acc.credits}")
+            if st.button("Plans and payments", use_container_width=True, key="prof_plans"):
+                st.session_state["nav_request"] = "Plans"
+                st.rerun()
+        with st.expander("Change password"):
             with st.form("prof_pw", clear_on_submit=True, border=False):
-                cur = st.text_input("Current password", type="password")
-                n1 = st.text_input("New password", type="password", placeholder="At least 8 characters")
+                cur = st.text_input("Current password", type="password",
+                                    help="Leave empty if your account has no password yet.")
+                n1 = st.text_input("New password", type="password", help="At least 8 characters, with a letter "
+                                                                           "and a number.")
                 n2 = st.text_input("Repeat new password", type="password")
                 if st.form_submit_button("Change password", type="primary"):
-                    if len(n1) < 8:
-                        st.warning("Use at least 8 characters.")
-                    elif n1 != n2:
+                    if n1 != n2:
                         st.warning("The new passwords do not match.")
                     else:
                         try:
-                            change_password(prof.get("email") or user.get("email"), cur, n1)
+                            change_password(uid, cur, n1)
                             st.success("Password changed. Use it next time you sign in.")
                         except AuthError as e:
                             st.error(str(e))

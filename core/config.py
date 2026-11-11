@@ -8,7 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(ROOT_DIR / ".env")
+load_dotenv(ROOT_DIR / ".env", override=True)  # .env wins over old values set in Windows
 
 
 # Extra websites used ONLY while building the analysis report (never during the Screener scrape)
@@ -75,6 +75,28 @@ class Settings:
     report_news_per_source: int = 5
     pdf_news_max: int = 70
     quality_details_in_pdf: bool = False
+    # ---- email code sign-in ----
+    otp_provider: str = "dev"           # supabase | smtp | dev
+    otp_secret: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    default_country_code: str = "91"
+    # ---- Razorpay and plans ----
+    razorpay_key_id: str = ""
+    razorpay_key_secret: str = ""
+    app_base_url: str = ""
+    price_single: int = 99
+    price_monthly: int = 299
+    price_yearly: int = 999
+    free_reports: int = 1
+    subscription_daily_limit: int = 0   # 0 = no daily cap for monthly/yearly plans
+
+    @property
+    def razorpay_configured(self) -> bool:
+        return bool(self.razorpay_key_id and self.razorpay_key_secret) and "xxxx" not in self.razorpay_key_id
 
     @property
     def llm_enabled(self) -> bool:
@@ -109,6 +131,22 @@ def get_settings() -> Settings:
         report_news_per_source=_int(_get_secret("REPORT_NEWS_PER_SOURCE", "5"), 5),
         pdf_news_max=_int(_get_secret("PDF_NEWS_MAX", "70"), 70),
         quality_details_in_pdf=_bool(_get_secret("QUALITY_DETAILS_IN_PDF", "false"), False),
+        otp_provider=(_get_secret("OTP_PROVIDER", "dev") or "dev").lower(),
+        otp_secret=_get_secret("OTP_SECRET"),
+        smtp_host=_get_secret("SMTP_HOST", "smtp.gmail.com"),
+        smtp_port=_int(_get_secret("SMTP_PORT", "587"), 587),
+        smtp_user=_get_secret("SMTP_USER"),
+        smtp_password=_get_secret("SMTP_PASSWORD").replace(" ", ""),
+        smtp_from=_get_secret("SMTP_FROM"),
+        default_country_code=_get_secret("DEFAULT_COUNTRY_CODE", "91").lstrip("+") or "91",
+        razorpay_key_id=_get_secret("RAZORPAY_KEY_ID"),
+        razorpay_key_secret=_get_secret("RAZORPAY_KEY_SECRET"),
+        app_base_url=_get_secret("APP_BASE_URL", "http://localhost:8501").rstrip("/"),
+        price_single=_int(_get_secret("PRICE_SINGLE_REPORT", "99"), 99),
+        price_monthly=_int(_get_secret("PRICE_MONTHLY", "299"), 299),
+        price_yearly=_int(_get_secret("PRICE_YEARLY", "999"), 999),
+        free_reports=_int(_get_secret("FREE_REPORTS", "1"), 1),
+        subscription_daily_limit=_int(_get_secret("SUBSCRIPTION_DAILY_LIMIT", "0"), 0),
     )
 
 

@@ -322,7 +322,9 @@ table.sis-table.compact td:last-child, table.sis-table.compact th:last-child { t
 .vr-auth-brand .logo .mark { width: 44px; height: 44px; border-radius: 10px; background: #fff; color: var(--vr-blue);
   display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1.2rem; }
 .vr-auth-brand .logo .n { font-size: 1.6rem; font-weight: 800; color: #fff; line-height: 1.1; }
-.vr-auth-brand .tag { color: #DCE6F7; margin: 14px 0 26px 0; font-size: 1rem; line-height: 1.6; }
+.vr-auth-brand .quote { color: #fff; margin: 22px 0 0 0; font-size: 1.45rem; font-weight: 800; line-height: 1.3;
+  border-left: 4px solid var(--vr-orange); padding-left: 14px; position: relative; z-index: 1; }
+.vr-auth-brand .tag { color: #DCE6F7; margin: 10px 0 26px 18px; font-size: 1rem; line-height: 1.6; }
 .vr-auth-brand .feat { display: flex; gap: 12px; margin-bottom: 16px; align-items: flex-start; position: relative; z-index: 1; }
 .vr-auth-brand .ic { width: 28px; height: 28px; border-radius: 8px; background: var(--vr-orange); color: #1B1B1B;
   display: flex; align-items: center; justify-content: center; font-weight: 800; flex: none; font-size: .85rem; }

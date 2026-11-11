@@ -99,12 +99,15 @@ def set_company(company: dict) -> None:
 
 
 def open_company(company_id: int, tab: str = "Overview") -> None:
-    """Switch to the Stocks page showing this company (call from any page, then st.rerun())."""
+    """Switch to the Screener Data page showing this company (call from any page, then st.rerun())."""
     comp = repo.get_company(company_id)
     if comp:
         set_company(comp)
-        st.session_state["nav_request"] = "Stocks"
-        st.session_state["ctab_request"] = tab
+        if tab == REPORT:
+            st.session_state["nav_request"] = "AI Analysis Report"
+        else:
+            st.session_state["nav_request"] = "Screener Data"
+            st.session_state["ctab_request"] = tab
 
 
 def load_run_into_state(run_id: int) -> None:
@@ -122,14 +125,13 @@ def load_run_into_state(run_id: int) -> None:
 
 def open_run(run_id: int) -> None:
     load_run_into_state(run_id)
-    st.session_state["nav_request"] = "Stocks"
+    st.session_state["nav_request"] = "Screener Data"
     st.session_state["ctab_request"] = "Overview"
 
 
 def open_report(report_id: int) -> None:
     report_view.load_report_into_state(report_id)
-    st.session_state["nav_request"] = "Stocks"
-    st.session_state["ctab_request"] = "Analysis Report"
+    st.session_state["nav_request"] = "AI Analysis Report"
 
 
 def do_fetch(company: dict, basis: str, breakdowns: bool = True) -> bool:
@@ -318,12 +320,14 @@ def header_and_actions(company: dict, payload: Optional[dict]) -> None:
                 else:
                     st.caption("Excel export needs the openpyxl package: run `pip install openpyxl` "
                                "in the project's virtual environment.")
-                if st.button("Build PDF", use_container_width=True, key="build_scr_pdf"):
-                    st.session_state["scr_pdf_for"] = run_id
-                if st.session_state.get("scr_pdf_for") == run_id:
-                    st.download_button("Download PDF", screener_pdf_bytes(run_id, True),
-                                       file_name=f"{sym}_screener_{run_id}.pdf", mime="application/pdf",
-                                       type="primary", use_container_width=True)
+                try:
+                    scr_pdf = screener_pdf_bytes(run_id, True)
+                except Exception as ex:  # noqa: BLE001
+                    scr_pdf = None
+                    st.caption(f"PDF could not be built: {ex}")
+                if scr_pdf:
+                    st.download_button("Screener data · PDF", scr_pdf, file_name=f"{sym}_screener_{run_id}.pdf",
+                                       mime="application/pdf", type="primary", use_container_width=True)
     if payload and basis != payload["meta"].get("basis"):
         st.caption(f"Showing the stored {payload['meta'].get('basis')} capture. Click “Refresh from Screener” to "
                    f"fetch {basis} figures.")
@@ -561,13 +565,26 @@ def tab_news(company: dict, payload: dict) -> None:
 
 
 # ------------------------------------------------------------------ page
-def render() -> None:
-    C.page_header("Stocks", "Company data from Screener.in, stored in your database · missing figures from other "
-                  "websites · AI-assisted analysis report")
+def render(mode: str = "data") -> None:
+    """mode "data": Screener data page; mode "report": AI analysis report page (same company selection)."""
+    if mode == "report":
+        C.page_header("AI Analysis Report", "Pick a company: its Screener data is fetched if needed, then generate a "
+                      "broker-style report with scorecard, projections, peers, data from other websites and news.")
+    else:
+        C.page_header("Screener Data", "Company data from Screener.in, stored in your database · missing figures "
+                      "from other websites")
     search_bar()
     company = st.session_state.get("company")
     if not company:
-        landing()
+        if mode == "report":
+            C.empty_state("Choose a company for the report", "Search above. If the company has never been fetched, "
+                          "its Screener data is fetched first (takes a few seconds).",
+                          [("Scorecard", "Six factors scored 0–10 from real numbers"),
+                           ("Projections", "Next three years, incl. Google TimesFM"),
+                           ("Other websites", "Missing figures from Value Research, Yahoo Finance and more"),
+                           ("PDF", "Download the report as a PDF straight away")])
+        else:
+            landing()
         return
     payload = ensure_payload(company)
     header_and_actions(company, payload)
@@ -578,30 +595,30 @@ def render() -> None:
         st.warning(w)
     req = st.session_state.pop("ctab_request", None)
     if req == REPORT:
-        st.session_state["co_view"] = "report"
+        st.session_state["nav_request"] = "AI Analysis Report"
+        st.rerun()
     elif req:
-        st.session_state["co_view"] = "data"
         st.session_state["ctab"] = req if req in CTABS else "Overview"
 
-    if st.session_state.get("co_view") == "report":
+    if mode == "report":
         a, b = st.columns([5, 1.7], vertical_alignment="center")
         with a:
             st.html('<div class="vr-report-title">Analysis Report</div>')
         with b:
-            if st.button("← Back to company data", key="back_data", use_container_width=True):
-                st.session_state["co_view"] = "data"
+            if st.button("📊 See Screener data", key="back_data", use_container_width=True):
+                st.session_state["nav_request"] = "Screener Data"
                 st.rerun()
         report_view.render_analysis(payload)
         return
 
     a, b = st.columns([5, 1.7], vertical_alignment="center")
     with b:
-        if st.button("📊  Analysis Report", key="go_report", type="primary", use_container_width=True,
+        if st.button("🤖  Generate AI report", key="go_report", type="primary", use_container_width=True,
                      help="Scorecard, projections (incl. TimesFM), peers, data from other websites and news"):
-            st.session_state["co_view"] = "report"
+            st.session_state["nav_request"] = "AI Analysis Report"
             st.rerun()
     with a:
-        st.caption("Company data from Screener. Open the Analysis Report for the full broker-style report.")
+        st.caption("Company data from Screener. Open the AI Analysis Report for the full broker-style report.")
     tab = C.tabbar("Section", CTABS, key="ctab", default="Overview")
     C.spacer(2)
     if tab == "Overview":

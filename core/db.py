@@ -114,7 +114,8 @@ _schema_checked = False
 
 REQUIRED_TABLES = ("profiles", "companies", "scrape_runs", "financial_facts", "summary_ratios", "peers",
                    "company_documents", "price_history", "news_items", "analysis_reports", "chat_messages", "rag_sync",
-                   "user_notes", "watchlist", "portfolio_holdings", "external_data", "company_links", "report_quality_checks")
+                   "user_notes", "watchlist", "portfolio_holdings", "external_data", "company_links", "report_quality_checks",
+                   "otp_codes", "payments", "report_usage")
 
 
 def missing_tables() -> list[str]:
@@ -124,22 +125,24 @@ def missing_tables() -> list[str]:
 
 
 def ensure_schema() -> Optional[str]:
-    """Create any missing tables from sql/schema.sql (once per app process).
+    """Create any missing tables from sql/schema.sql, then apply sql/accounts_billing.sql (once per app process).
 
-    The script only uses CREATE ... IF NOT EXISTS / CREATE OR REPLACE VIEW, so existing data is never touched.
+    Both scripts only use CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT EXISTS, so existing data is never touched.
     Returns an error text, or None when everything is in place.
     """
     global _schema_checked
     if _schema_checked:
         return None
-    try:
-        if missing_tables():
-            from pathlib import Path
+    from pathlib import Path
 
-            execute((Path(__file__).resolve().parent.parent / "sql" / "schema.sql").read_text(encoding="utf-8"))
-            still = missing_tables()
-            if still:
-                return "tables still missing: " + ", ".join(still)
+    sql_dir = Path(__file__).resolve().parent.parent / "sql"
+    try:
+        if any(t not in ("otp_codes", "payments", "report_usage") for t in missing_tables()):
+            execute((sql_dir / "schema.sql").read_text(encoding="utf-8"))
+        execute((sql_dir / "accounts_billing.sql").read_text(encoding="utf-8"))
+        still = missing_tables()
+        if still:
+            return "tables still missing: " + ", ".join(still)
         _schema_checked = True
         return None
     except Exception as e:  # noqa: BLE001

@@ -627,3 +627,16 @@ def save_link(company_id: int, site: str, url: str, found_by: str = "search") ->
 
 def delete_link(company_id: int, site: str) -> None:
     db.execute("delete from company_links where company_id = %s and site = %s", (company_id, site))
+
+
+def popular_companies(days: int = 30, limit: int = 8) -> list[dict]:
+    """Companies opened and analysed most on Stock Insight Studio recently (all users), for the Home page."""
+    return db.fetch_all(
+        """select c.id, c.name, c.nse_symbol, count(*) as n
+           from (select company_id from scrape_runs
+                 where status = 'success' and started_at > now() - make_interval(days => %s)
+                 union all
+                 select company_id from analysis_reports where created_at > now() - make_interval(days => %s)) x
+           join companies c on c.id = x.company_id
+           where c.nse_symbol is not null
+           group by c.id, c.name, c.nse_symbol order by n desc, c.name limit %s""", (days, days, limit))

@@ -10,6 +10,7 @@ from analysis.forecast import reader_text
 from analysis import guardrails as G
 from analysis.news import group_by_source
 from analysis.report import build_report
+from core import billing
 from core import repository as repo
 from core.config import get_settings
 from core.services import refresh_news
@@ -49,26 +50,25 @@ def load_report_into_state(report_id: int) -> None:
     st.session_state["report_id"] = report_id
 
 
-def _export_bar(json_bytes: bytes, json_name: str, prep_key: str, state_key: str, ident, pdf_fn, pdf_name: str) -> None:
+def _export_bar(json_bytes: bytes, json_name: str, pdf_fn, pdf_name: str) -> None:
+    """PDF download straight away (built once and cached), plus the raw JSON."""
     with st.container(border=True):
-        a, b, c, d = st.columns([2.2, 1, 1, 1.2], vertical_alignment="center")
+        a, b, c = st.columns([2.6, 1.4, 1], vertical_alignment="center")
         with a:
-            st.html('<div style="font-weight:700;color:#163A5F">Export this report</div>'
-                    '<div style="font-size:.8rem;color:#595959">JSON (all data) or a formatted broker-style PDF</div>')
+            st.html('<div style="font-weight:700;color:#163A5F">Download this report</div>'
+                    '<div style="font-size:.8rem;color:#595959">Formatted broker-style PDF, or JSON with all data</div>')
+        try:
+            data = pdf_fn()
+        except Exception as ex:  # noqa: BLE001
+            data = None
+            a.caption(f"PDF could not be built: {ex}")
         with b:
-            st.download_button("JSON", json_bytes, file_name=json_name, mime="application/json",
-                               use_container_width=True)
+            if data:
+                st.download_button("⤓ Download PDF", data, file_name=pdf_name, mime="application/pdf",
+                                   type="primary", use_container_width=True, key="dl_report_pdf")
         with c:
-            if st.button("Prepare PDF", use_container_width=True, key=prep_key):
-                st.session_state[state_key] = ident
-        with d:
-            if ident and st.session_state.get(state_key) == ident:
-                with st.spinner("Building PDF…"):
-                    data = pdf_fn()
-                st.download_button("Download PDF", data, file_name=pdf_name, mime="application/pdf",
-                                   type="primary", use_container_width=True)
-            else:
-                st.caption("Click “Prepare PDF” first")
+            st.download_button("JSON", json_bytes, file_name=json_name, mime="application/json",
+                               use_container_width=True, key="dl_report_json")
 
 
 def render_analysis(payload: dict) -> None:
@@ -78,9 +78,20 @@ def render_analysis(payload: dict) -> None:
     with st.container(border=True):
         C.section("Analysis report", "Scorecard and projections are calculated in Python from the stored "
                   "Screener data; Gemini writes the narrative using only those numbers.")
+        access = billing.access_for(_user_id()) if _user_id() else None
         c1, c2, c3 = st.columns([1.4, 1.5, 1.9], vertical_alignment="bottom")
         with c1:
-            gen = st.button("Generate analysis report", type="primary", use_container_width=True)
+            if access and access.can_generate:
+                label = {"free": "Generate free report", "credit": "Generate report (1 credit)"}.get(
+                    access.source, "Generate analysis report")
+                gen = st.button(label, type="primary", use_container_width=True)
+                st.caption(access.message)
+            else:
+                gen = False
+                if st.button("See plans to generate", type="primary", use_container_width=True):
+                    st.session_state["nav_request"] = "Plans"
+                    st.rerun()
+                st.caption(access.message if access else "Sign in to generate a report")
         with c2:
             refresh = st.checkbox("Refresh news first (NSE, BSE + 11 news websites, up to 15 each)", value=True)
             use_external = st.checkbox(
@@ -105,6 +116,11 @@ def render_analysis(payload: dict) -> None:
                              on_change=_open_prev)
 
     if gen:
+        access = billing.access_for(_user_id())      # check again: another tab may have used the last credit
+        if not access.can_generate:
+            st.warning(access.message)
+            gen = False
+    if gen:
         with st.status("Building analysis report…", expanded=True) as status:
             if refresh:
                 st.write("Fetching latest news…")
@@ -116,6 +132,10 @@ def render_analysis(payload: dict) -> None:
             report = build_report(payload, news, use_external=use_external, progress=st.write)
             rid = repo.save_report(company["id"], st.session_state.get("run_id"), _user_id(), report)
             st.session_state["report"], st.session_state["report_id"] = report, rid
+            try:
+                billing.consume(_user_id(), rid, access.source)
+            except billing.BillingError as ex:
+                st.write(str(ex))
             repo.log_activity(_user_id(), company["id"],
                               f"Generated analysis report #{rid}: {report['stance']} ({report['score']:.0f}/100)")
             status.update(label=f"Report #{rid} ready ({report['model']})", state="complete", expanded=False)
@@ -380,8 +400,7 @@ def render_report(report: dict, payload: Optional[dict]) -> None:
     comp = report.get("company", {})
     sym = comp.get("nse_symbol") or "company"
     _export_bar(json.dumps(report, indent=2, default=str, ensure_ascii=False).encode(),
-                f"{sym}_analysis_{rid}.json", "prep_rep_pdf", "rep_pdf_for", rid,
-                lambda: report_pdf_bytes(rid), f"{sym}_analysis_{rid}.pdf")
+                f"{sym}_analysis_{rid}.json", lambda: report_pdf_bytes(rid), f"{sym}_analysis_{rid}.pdf")
 
     stance = report.get("stance", "Neutral")
     st.html(f"""<div class="sis-card"><div class="sis-head"><div>

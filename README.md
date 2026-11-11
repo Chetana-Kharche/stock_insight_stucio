@@ -14,7 +14,8 @@ The whole project is written in Python.
 
 | Area | What you get |
 |---|---|
-| **Login** | Page 1: sign in, create account, forgot password (Supabase Auth) |
+| **Login** | Email + password. Registration: username, email, mobile number, password → code to the email → verify → home page. Forgot password: code to the email → new password. One account per mobile number |
+| **Plans** | First report free, then ₹99 per report, ₹299 per month or ₹999 per year (unlimited), paid through Razorpay. Returning users with no plan see the plans before the home page |
 | **Company picker** | A dropdown of every NSE company (about 2,000+), plus a free-text search that also queries Screener's own search (for BSE-only names) |
 | **Scraper** | Summary ratios, pros/cons, peers, quarterly results, P&L, compounded growth tables, balance sheet, cash flow, ratios, shareholding (quarterly and yearly), announcements, annual reports, credit ratings, concalls, 5-year price and P/E history, and **all "+" breakdown rows** |
 | **Screener-style view** | Cards and tables laid out like Screener, with a toggle for the "+" breakdowns |
@@ -32,14 +33,15 @@ The whole project is written in Python.
 
 ```
 Streamlit UI (app.py: top bar: 3 tabs + user menu)
- ├─ ui/auth_view.py          sign in / create account / forgot password (Supabase Auth)
+ ├─ ui/auth_view.py          sign in / create account with an email code (core/auth.py, core/otp.py)
+ ├─ ui/plans_view.py         plans, Razorpay payment links, payment history (core/billing.py)
  ├─ ui/portfolio_view.py     holdings + watchlist
  ├─ ui/company_view.py       Stocks: search → company page with Screener-style sub-tabs
  ├─ ui/report_view.py        Analysis Report sub-tab (generate, reopen, export)
  ├─ ui/movers_view.py        Market Movers (analysis/market.py)
  ├─ ui/market_news_view.py   Market News (analysis/news.py)
  ├─ ui/notebook_view.py      notes + activity + history (ui/history_view.py)
- ├─ ui/profile_view.py       account, usage, password, system status (ui/status_view.py)
+ ├─ ui/profile_view.py       account, mobile, plan, usage, system status (ui/status_view.py)
  ├─ ui/styles.py             Value Research colours
  └─ ui/chat_widget.py        floating chatbot (bottom-right)
         │
@@ -99,13 +101,61 @@ The app has a top bar like Screener and colours like Value Research. After signi
 | **Market Movers** | Top gainers, top losers, stocks at a 52-week high and most active stocks, from NSE's live data. If NSE blocks the request, the lists are calculated from Yahoo Finance prices for the Nifty 100, and the page says so. |
 | **Market News** | Latest general stock-market headlines from the 11 news websites above, with search, a website filter and an AI summary of key points. |
 | **Notebook** | Your notes (text note, outlook, action) and an automatic activity log (fetches, reports, watchlist and portfolio changes), plus fetch history, report history and the stored-data explorer. Everything is saved in Supabase, so it is there at every sign-in. |
-| **Profile** | Name, email, member since, usage figures, change name or password, system status (database, Gemini, RAGFlow, NSE company list) and sign out. |
+| **Profile** | Name, email, member since, usage figures, mobile number and plan, change name, system status (database, Gemini, RAGFlow, NSE company list) and sign out. |
 
 **Key Ratios** shows Screener's ratios, ratios calculated from Screener's statements, and a separate block of figures Screener does not publish, from Yahoo Finance, Value Research Online, Investing.com and Macrotrends. Each has its source and link, and the lookup is saved in `external_data` and reused for 24 hours.
 
 **Analysis Report** works as before (scorecard, projections, exhibits, PDF), and now also has a **peer comparison table** and a stronger **news section**: headlines that name the company, grouped by source (NSE and BSE filings first, then 11 news websites: Economic Times, Moneycontrol, Business Standard, Mint, CNBC-TV18, The Hindu BusinessLine, Financial Express, Business Today, NDTV Profit, Zee Business, Reuters — up to 15 headlines from each), then **Key insights from the news**, then the company's exchange announcements.
 
 **Chatbot:** click the blue **💬 Ask about SYMBOL** button at the bottom-right.
+
+## Accounts: email + password, email code at registration
+
+Registration asks for a username, email, mobile number and password. A code is emailed, and after verifying it the
+user is in. Next time they sign in with email and password (no code). "Forgot password?" emails a code to set a new
+password. Passwords are stored only as a salted PBKDF2 hash; 5 wrong passwords lock the account for 15 minutes. Each mobile number can be used by only one account, so one
+person cannot make many accounts with different emails for more free reports (the number is not checked by SMS).
+Accounts from the old email/password version are asked to add a mobile number once.
+
+Set `OTP_PROVIDER` in `.env`:
+
+| Value | What happens |
+|---|---|
+| `supabase` | Supabase Auth emails the code and checks it. Uses `SUPABASE_URL` and `SUPABASE_ANON_KEY`. |
+| `smtp` | The app emails the code itself (for example from Gmail). Needs `SMTP_USER` and `SMTP_PASSWORD`. |
+| `dev` | Nothing is sent; the code is shown on screen. Only on your own computer. |
+
+### Supabase setup (OTP_PROVIDER=supabase)
+1. Supabase dashboard → **Authentication → Sign In / Providers → Email**: Email provider **on**.
+2. **Authentication → Emails → Templates**: in **Magic Link** *and* **Confirm signup**, replace the link with the code,
+   for example `<h2>Your Stock Insight Studio code</h2><p>{{ .Token }}</p><p>Valid for 10 minutes.</p>`.
+   With `{{ .Token }}` in the template Supabase sends a code instead of a link.
+3. Supabase's built-in email only reaches members of your Supabase team and about 2 emails per hour. For real users
+   open **Authentication → Emails → SMTP Settings**, turn on custom SMTP and enter, for Gmail: host `smtp.gmail.com`,
+   port `587`, username = your Gmail, password = a Gmail App Password, sender = your Gmail. Then raise the email limit
+   under **Authentication → Rate Limits** (Gmail allows about 500 emails a day).
+4. Optional: **Sign In / Providers → Email → Email OTP Expiration** = 600 seconds (10 minutes).
+
+### Gmail App Password (for either provider)
+Google Account → Security → turn on **2-Step Verification** → search **App passwords** → create one named
+"Stock Insight Studio" → copy the 16-letter password. Never use your normal Gmail password.
+
+## Plans and Razorpay
+
+Access to a new analysis report, in this order: an active monthly/yearly plan, then the free report, then single-report credits.
+Prices come from `PRICE_SINGLE_REPORT`, `PRICE_MONTHLY`, `PRICE_YEARLY` and `FREE_REPORTS` in `.env`.
+
+1. Create an account at razorpay.com and open the Dashboard in **Test mode**.
+2. Account & Settings → API Keys → Generate key. Put the Key Id and Key Secret in `RAZORPAY_KEY_ID` and `RAZORPAY_KEY_SECRET`.
+3. Set `APP_BASE_URL` to the address of the app (`http://localhost:8501` locally).
+4. Restart the app, open Plans, choose a plan, press **Pay on Razorpay** and pay with a test method
+   (UPI id `success@razorpay`, or a test card from Razorpay's docs). Back in the app press **I have paid · check payment**.
+5. When it works: finish KYC in Razorpay (activation), switch the Dashboard to Live mode, generate live keys
+   (`rzp_live_…`), put them in `.env`, and set `APP_BASE_URL` to your public https address.
+
+The app uses Razorpay **Payment Links**: it creates a link, the user pays on Razorpay's page, and the app confirms the
+payment with the Razorpay API (or the signed redirect back to `APP_BASE_URL`). A payment is applied only once.
+A new plan starts when the current one ends, so paid time is never lost. Tables: `payments`, `report_usage`.
 
 ## Querying the stored data (SQL)
 
