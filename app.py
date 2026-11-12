@@ -61,8 +61,8 @@ def top_bar(user: dict) -> str:
     with st.container(key="topbar"):
         a, b, c = st.columns([6, 1.1, 1.6], vertical_alignment="center", gap="small")
         with a:
-            st.html('<div class="vr-brand"><div class="mark">SI</div><div class="txt">'
-                    '<div class="a">Stock Insight</div><div class="b">STUDIO</div></div></div>')
+            st.html('<div class="vr-brand"><div class="mark">SI</div>'
+                    '<div class="name">Stock Insight <span>Studio</span></div></div>')
         with b:
             if page != "Home" and st.button("🏠 Home", key="top_home", use_container_width=True):
                 st.session_state["nav_request"] = "Home"
@@ -79,7 +79,7 @@ def top_bar(user: dict) -> str:
                         st.rerun()
                 if st.button("Logout", key="menu_logout", use_container_width=True):
                     profile_view.do_sign_out()
-    home_view.ticker_tape()
+        home_view.ticker_tape()        # inside the white card, along its bottom edge
     return page
 
 

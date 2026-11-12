@@ -55,11 +55,17 @@ a:hover { text-decoration: underline; }
 hr { margin: 1rem 0 !important; border-color: var(--vr-line) !important; }
 
 /* ------------------------------------------------------------ top bar (white card) */
-.st-key-topbar { background: #FFFFFF; border: 1px solid var(--vr-line); border-radius: 12px;
-  padding: 6px 16px; margin: 6px 0 4px; box-shadow: 0 2px 10px rgba(22,58,95,.06); }
+.st-key-topbar { background: #FFFFFF; border: 1px solid var(--vr-line); border-radius: 14px;
+  padding: 16px 22px 0; margin: 6px 0 18px; box-shadow: 0 4px 16px rgba(22,58,95,.08); overflow: hidden; }
+.st-key-topbar [data-testid="stVerticalBlock"] { gap: 0 !important; }
+/* the scrolling ticker sits flush along the bottom edge of the white header card */
+.st-key-topbar .tk-wrap { margin: 16px -22px 0 !important; border-radius: 0 !important; border: none !important;
+  border-top: 1px solid #1E2B40 !important; }
+.vr-brand .name { font-weight: 800; color: var(--vr-blue); font-size: 1.45rem; letter-spacing: -.01em; }
+.vr-brand .name span { color: var(--vr-navy); }
 .vr-brand { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
-.vr-brand .mark { width: 34px; height: 34px; border-radius: 8px; background: var(--vr-blue); color: #fff; flex: none;
-  display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: .95rem; }
+.vr-brand .mark { width: 44px; height: 44px; border-radius: 10px; background: var(--vr-blue); color: #fff; flex: none;
+  display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1.1rem; }
 .vr-brand .txt { line-height: 1.05; }
 .vr-brand .a { font-weight: 800; color: var(--vr-blue); font-size: 1.05rem; }
 .vr-brand .b { font-weight: 600; color: var(--vr-navy); font-size: .7rem; letter-spacing: .14em; }

@@ -67,6 +67,17 @@ CSS = """
 .tk-item .v{color:#C9D3E3;font-weight:500}
 .tk-item .u{color:#2ECC71}.tk-item .d{color:#FF5C5C}.tk-sep{color:#3A4A63}
 @keyframes tk-move{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+/* bottom of Home: the right column (watchlist + news) ends exactly where "Sectors today" ends */
+@media (min-width: 768px){
+  .st-key-hm_bottom [data-testid="stHorizontalBlock"]{align-items:stretch !important}
+  .st-key-hm_bottom [data-testid="stColumn"]:has(.st-key-hm_side){position:relative;align-self:stretch !important}
+  .st-key-hm_side{position:absolute !important;inset:0;overflow-y:auto;overflow-x:hidden;padding-right:4px;
+    display:flex !important;flex-direction:column}
+  /* the news card grows to the bottom of the column; "All market news" sits at its foot */
+  .st-key-hm_side div:has(.st-key-hm_news){display:flex !important;flex-direction:column;flex:1 1 auto}
+  .st-key-hm_news{flex:1 1 auto}
+  .st-key-hm_news > :last-child{margin-top:auto}
+}
 .gen-title{font-size:1.15rem;font-weight:800;color:var(--vr-navy);margin-bottom:2px}
 .gen-sub{font-size:.86rem;color:var(--vr-muted);margin-bottom:8px}
 </style>
@@ -160,6 +171,17 @@ def _chg(change: Optional[float], pct: Optional[float]) -> str:
     arrow = "▲" if pct > 0 else ("▼" if pct < 0 else "")
     head = f"{change:+,.2f} " if change is not None else ""
     return f"{arrow} {head}({pct:+.2f}%)"
+
+
+def _ist(iso: Optional[str]) -> str:
+    """'12 Nov 2026, 02:35 PM IST' from a UTC ISO timestamp."""
+    try:
+        ts = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        ts = datetime.now(IST)
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(IST).strftime("%d %b %Y, %I:%M %p IST")
 
 
 def _cr(v: Optional[float]) -> str:
@@ -405,10 +427,10 @@ def _watchlist(st_data: dict) -> None:
 
 
 def _news_box() -> None:
-    with st.container(border=True):
+    with st.container(border=True, key="hm_news"):
         C.subheading("Market news")
         try:
-            items = _news().get("items", [])[:8]
+            items = _news().get("items", [])[:6]
         except Exception:  # noqa: BLE001
             items = []
         if items:
@@ -467,9 +489,6 @@ def _generate_box() -> None:
 def render() -> None:
     st.markdown(CSS, unsafe_allow_html=True)
     user = st.session_state.get("user") or {}
-    hour = datetime.now(IST).hour
-    greet = "Good morning" if hour < 12 else ("Good afternoon" if hour < 17 else "Good evening")
-    st.html(f'<div class="hm-hello">{greet}, {e(user.get("full_name") or "")}</div>')
     if st.session_state.get("payment_ok"):
         st.success(f"Payment received. {st.session_state.pop('payment_ok')} is now active. "
                    "You can generate your report below.")
@@ -486,10 +505,10 @@ def render() -> None:
 @st.fragment(run_every=REFRESH_SECONDS)
 def _market_sections() -> None:
     """Everything below the Generate box. Reloads itself every 5 minutes (no button needed)."""
-    st.html('<div class="hm-h" style="margin-top:26px">Markets today'
-            '<small>Indian and world markets · updates every 5 minutes</small></div>')
     with st.spinner("Loading market data…"):
         ov = _overview()
+    st.html('<div class="hm-h" style="margin-top:26px">Markets today'
+            f'<small>Last updated: {_ist(ov.get("as_of"))}</small></div>')
     _index_strip(ov)
     _index_chart(ov)
 
@@ -500,16 +519,17 @@ def _market_sections() -> None:
     _popular_section(st_data)
     _movers(lists)
 
-    left, right = st.columns([2.3, 1], gap="large")
-    with left:
-        _market_cap(lists)
-        _sectors(ov, st_data["stocks"])
-    with right:
-        C.spacer(18)
-        _watchlist(st_data)
-        _news_box()
+    with st.container(key="hm_bottom"):
+        left, right = st.columns([2.3, 1], gap="large")
+        with left:
+            _market_cap(lists)
+            _sectors(ov, st_data["stocks"])
+        with right:
+            with st.container(key="hm_side"):     # same height as the left side (see CSS), news scrolls inside
+                C.spacer(18)
+                _watchlist(st_data)
+                _news_box()
 
     for n in ov.get("notes", []) + st_data.get("notes", []):
         HD.log.info("home data note: %s", n)
-    st.caption(f"Last updated {datetime.now(IST).strftime('%H:%M')} IST · prices may be delayed by up to 15 minutes · "
-               "for education, not investment advice.")
+    st.caption("Prices may be delayed by up to 15 minutes · for education, not investment advice.")
