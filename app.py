@@ -42,40 +42,31 @@ def _config_problems() -> list[str]:
     return problems
 
 
-TOP_TABS = ["Home", "Screener Data", "AI Analysis Report", "Market News"]   # horizontal menu
-ALIASES = {"Stocks": "Screener Data", "Market Movers": "Home"}               # old page names
-MENU_PAGES = ["Portfolio", "Notebook", "Plans", "Profile"]         # only in the user drop-down menu
+ALIASES = {"Stocks": "Screener Data", "Market Movers": "Home"}       # old page names
+MENU_PAGES = ["Home", "Plans", "Portfolio", "Notebook", "Profile"]     # in the user drop-down menu
 
 
-def _route() -> None:
-    """Apply a page change requested by a button (drop-down menu or a link inside a page)."""
+def _route() -> str:
+    """Apply a page change requested by a button anywhere, and return the page to show."""
     target = st.session_state.pop("nav_request", None)
     target = ALIASES.get(target, target)
-    if target in TOP_TABS:
-        st.session_state["menu_page"] = None
-        st.session_state["nav"] = target
-        st.session_state["_nav_last"] = target
-    elif target in MENU_PAGES:
-        st.session_state["menu_page"] = target
-        st.session_state["nav"] = None           # no tab highlighted while a menu page is open
+    if target in PAGES:
+        st.session_state["page"] = target
+    return st.session_state.setdefault("page", "Home")
 
 
 def top_bar(user: dict) -> str:
-    """Brand, main tabs and the user menu. Returns the selected page."""
-    _route()
-    if "nav" not in st.session_state and not st.session_state.get("menu_page"):
-        st.session_state["nav"] = "Home"
+    """Brand on the left, Home + user menu on the right, the scrolling stock ticker below. Returns the page."""
+    page = _route()
     with st.container(key="topbar"):
-        a, b, c = st.columns([2.1, 5.4, 1.5], vertical_alignment="center", gap="medium")
+        a, b, c = st.columns([6, 1.1, 1.6], vertical_alignment="center", gap="small")
         with a:
             st.html('<div class="vr-brand"><div class="mark">SI</div><div class="txt">'
                     '<div class="a">Stock Insight</div><div class="b">STUDIO</div></div></div>')
         with b:
-            seg = getattr(st, "segmented_control", None)
-            if seg is not None:
-                val = seg("Navigate", TOP_TABS, key="nav", label_visibility="collapsed")
-            else:  # older Streamlit
-                val = st.radio("Navigate", TOP_TABS, key="nav", horizontal=True, label_visibility="collapsed")
+            if page != "Home" and st.button("🏠 Home", key="top_home", use_container_width=True):
+                st.session_state["nav_request"] = "Home"
+                st.rerun()
         with c:
             name = user.get("full_name") or (user.get("email") or "user").split("@")[0]
             with st.popover(f"👤 {name[:14].upper()}", use_container_width=True):
@@ -88,19 +79,8 @@ def top_bar(user: dict) -> str:
                         st.rerun()
                 if st.button("Logout", key="menu_logout", use_container_width=True):
                     profile_view.do_sign_out()
-    menu_page = st.session_state.get("menu_page")
-    if val is not None:
-        if menu_page:                        # a tab was clicked while a menu page was open
-            st.session_state["menu_page"] = None
-        st.session_state["_nav_last"] = val
-        return val
-    if menu_page:
-        return menu_page
-    # the active tab was clicked again (segmented control un-selects it): keep showing it
-    last = st.session_state.get("_nav_last", "Home")
-    st.session_state["nav_request"] = last
-    st.rerun()
-    return last
+    home_view.ticker_tape()
+    return page
 
 
 def main() -> None:
@@ -143,17 +123,11 @@ def main() -> None:
     uid = st.session_state["user"]["id"]
     if auth_view.mobile_gate(st.session_state["user"]):     # old accounts add a mobile number once
         return
-    if st.session_state.pop("just_signed_in", False):
-        # returning user with the free report used and no plan or credit: show the plans before the home page
-        st.session_state["show_plans_gate"] = billing.is_returning_without_access(uid)
-    if st.session_state.get("show_plans_gate"):
-        plans_view.render(gate=True)
-        return
-
+    st.session_state.pop("just_signed_in", None)   # signed-in users always start on Home
     page = top_bar(st.session_state["user"])
     PAGES[page]()
-    st.html('<div class="vr-foot">Data: Screener.in (main source), NSE, Yahoo Finance, Value Research, Investing.com, '
-            'Macrotrends, NSE & BSE filings and 11 news websites. For personal and educational use; not investment advice.</div>')
+    st.html('<div class="vr-foot">Market data may be delayed. AI-assisted research for education; '
+            'not investment advice.</div>')
     chat_widget.render()
 
 

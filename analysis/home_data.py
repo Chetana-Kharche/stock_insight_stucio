@@ -331,3 +331,40 @@ def sector_breakdown(stocks: list[dict]) -> list[dict]:
             groups.setdefault(r["industry"], []).append(r["change_pct"])
     rows = [{"industry": k, "change_pct": sum(v) / len(v), "count": len(v)} for k, v in groups.items()]
     return sorted(rows, key=lambda r: -r["change_pct"])
+
+
+# ------------------------------------------------------------------ scrolling ticker (all pages)
+WORLD = [  # label, Yahoo ticker
+    ("DOW JONES", "^DJI"), ("S&P 500", "^GSPC"), ("NASDAQ", "^IXIC"), ("FTSE 100", "^FTSE"), ("DAX", "^GDAXI"),
+    ("NIKKEI 225", "^N225"), ("HANG SENG", "^HSI"), ("SHANGHAI", "000001.SS"),
+    ("APPLE", "AAPL"), ("MICROSOFT", "MSFT"), ("NVIDIA", "NVDA"), ("AMAZON", "AMZN"), ("ALPHABET", "GOOGL"),
+    ("META", "META"), ("TESLA", "TSLA"),
+    ("GOLD", "GC=F"), ("CRUDE OIL", "CL=F"), ("USD/INR", "INR=X"),
+]
+
+
+def world_quotes() -> list[dict]:
+    """Last price and day change for world indices, big US stocks, gold, crude and USD/INR. Never raises."""
+    try:
+        data = _download([t for _, t in WORLD], "5d", "1d")
+    except Exception as e:  # noqa: BLE001
+        log.warning("world quotes: %s", e)
+        return []
+    out = []
+    for label, t in WORLD:
+        df = _frame(data, t)
+        if df is None or len(df) < 2:
+            continue
+        last, prev = float(df["Close"].iloc[-1]), float(df["Close"].iloc[-2])
+        out.append({"name": label, "last": last, "change_pct": (last / prev - 1) * 100 if prev else None})
+    return out
+
+
+def ticker_items(overview: dict, stocks: list[dict], world: list[dict]) -> list[dict]:
+    """One flat list for the scrolling tape: Indian indices, NIFTY 100 stocks, then the world."""
+    items = [{"name": r["name"], "last": r.get("last"), "change_pct": r.get("change_pct")}
+             for r in overview.get("indices", [])]
+    items += [{"name": r["symbol"], "last": r.get("price"), "change_pct": r.get("change_pct")}
+              for r in sorted(stocks, key=lambda r: -(r.get("mcap_cr") or 0))]
+    items += world
+    return [i for i in items if i.get("last") is not None]

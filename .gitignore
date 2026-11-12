@@ -13,3 +13,9 @@ Claude outputs/
 *.zip
 *.pem
 *credentials*.txt
+
+# secrets and backups - never upload
+cloud_secrets.toml
+.env.*
+!.env.example
+*.backup*

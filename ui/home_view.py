@@ -8,6 +8,7 @@ Data: NSE India (live) with Yahoo Finance for charts and as fallback - see analy
 from __future__ import annotations
 
 from datetime import datetime
+from datetime import timedelta, timezone
 from typing import Optional
 
 import plotly.graph_objects as go
@@ -19,6 +20,7 @@ from ui import components as C
 from ui.html import e
 
 UP, DOWN, FLAT = "#12783C", "#C62828", "#595959"
+IST = timezone(timedelta(hours=5, minutes=30))   # India time (no daylight saving)
 
 CSS = """
 <style>
@@ -57,19 +59,70 @@ CSS = """
 .hm-bar{display:flex;height:9px;border-radius:6px;overflow:hidden;margin:8px 0 4px}
 .hm-wl{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px dashed var(--vr-line)}
 .hm-wl .nm{font-weight:600;font-size:.88rem}
+.tk-wrap{overflow:hidden;white-space:nowrap;background:#0F1B2D;border-radius:8px;margin:6px 0 14px;
+  border:1px solid #1E2B40;position:relative}
+.tk-track{display:inline-flex;gap:28px;padding:8px 0;animation:tk-move var(--tk-speed,180s) linear infinite}
+.tk-wrap:hover .tk-track{animation-play-state:paused}
+.tk-item{display:inline-flex;gap:8px;font-size:.86rem;font-weight:600;color:#E8EDF5;align-items:baseline}
+.tk-item .v{color:#C9D3E3;font-weight:500}
+.tk-item .u{color:#2ECC71}.tk-item .d{color:#FF5C5C}.tk-sep{color:#3A4A63}
+@keyframes tk-move{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+.gen-title{font-size:1.15rem;font-weight:800;color:var(--vr-navy);margin-bottom:2px}
+.gen-sub{font-size:.86rem;color:var(--vr-muted);margin-bottom:8px}
 </style>
 """
 
 
 # ------------------------------------------------------------------ cached data
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=240, show_spinner=False)
 def _overview() -> dict:
     return HD.market_overview()
 
 
-@st.cache_data(ttl=180, show_spinner=False)
+@st.cache_data(ttl=240, show_spinner=False)
 def _stocks(extra: tuple[str, ...]) -> dict:
     return HD.stocks_overview(extra)
+
+
+@st.cache_data(ttl=240, show_spinner=False)
+def _world() -> list[dict]:
+    return HD.world_quotes()
+
+
+def _extra_symbols() -> tuple[str, ...]:
+    """Popular and watchlist companies, priced together with the NIFTY 100 (one download for all pages)."""
+    extra = {p["nse_symbol"] for p in _popular() if p.get("nse_symbol")}
+    uid = (st.session_state.get("user") or {}).get("id")
+    try:
+        extra |= {w["nse_symbol"] for w in (repo.list_watchlist(uid) if uid else []) if w.get("nse_symbol")}
+    except Exception:  # noqa: BLE001
+        pass
+    return tuple(sorted(extra))
+
+
+REFRESH_SECONDS = 300   # market data on Home and the ticker reload themselves every 5 minutes
+
+
+@st.fragment(run_every=REFRESH_SECONDS)
+def ticker_tape() -> None:
+    """Thin, continuously scrolling line of live prices (shown under the top bar on every page)."""
+    st.markdown(CSS, unsafe_allow_html=True)
+    try:
+        items = HD.ticker_items(_overview(), _stocks(_extra_symbols())["stocks"], _world())
+    except Exception:  # noqa: BLE001
+        items = []
+    if not items:
+        return
+    parts = []
+    for i in items:
+        p = i.get("change_pct")
+        cls, arrow = ("u", "▲") if (p or 0) >= 0 else ("d", "▼")
+        pct = f'<span class="{cls}">{arrow} {abs(p):.2f}%</span>' if p is not None else ""
+        parts.append(f'<span class="tk-item">{e(i["name"])} <span class="v">{_num(i["last"])}</span> {pct}</span>'
+                     '<span class="tk-sep">•</span>')
+    row = "".join(parts)
+    speed = max(60, len(items) * 3)      # seconds for one full loop: about 3 s per item
+    st.html(f'<div class="tk-wrap"><div class="tk-track" style="--tk-speed:{speed}s">{row}{row}</div></div>')
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -154,19 +207,13 @@ def _open_picker(rows: list[dict], key: str) -> None:
     opts = [r["symbol"] for r in rows if r["symbol"] in known]
     if not opts:
         return
-    from ui.company_view import set_company
-
     a, b, c = st.columns([3, 1.2, 1.2], vertical_alignment="bottom")
     sym = a.selectbox("Open a company from this list", opts, key=f"pick_{key}",
                       format_func=lambda s: f"{known[s]['name']} · {s}")
     if b.button("📊 Screener data", key=f"scr_{key}", use_container_width=True):
-        set_company(repo.get_company(known[sym]["id"]))
-        st.session_state["nav_request"] = "Screener Data"
-        st.rerun()
+        go_to(known[sym]["id"], "data")
     if c.button("🤖 AI report", key=f"ai_{key}", type="primary", use_container_width=True):
-        set_company(repo.get_company(known[sym]["id"]))
-        st.session_state["nav_request"] = "AI Analysis Report"
-        st.rerun()
+        go_to(known[sym]["id"], "report")
 
 
 # ------------------------------------------------------------------ sections
@@ -180,8 +227,7 @@ def _index_strip(ov: dict) -> None:
     if cards:
         st.html(f'<div class="hm-strip">{"".join(cards)}</div>')
     else:
-        C.empty_state("Index data is not available right now", "NSE and Yahoo Finance did not answer. "
-                      "Press Refresh in a minute.")
+        C.empty_state("Index data is not available right now", "It will load again automatically in a few minutes.")
 
 
 def _breaks(rng: str) -> list:
@@ -271,7 +317,6 @@ def _popular_section(st_data: dict) -> None:
         return
     st.html(f'<div class="hm-h">{title}<small>{sub}</small></div>'
             f'<div class="hm-grid">{"".join(_stock_card(r) for r in rows)}</div>')
-    _open_picker(rows, "pop")
 
 
 MOVER_TABS = {"gainers": "Top gainers", "losers": "Top losers", "volume": "Volume shockers",
@@ -298,7 +343,6 @@ def _movers(lists: dict) -> None:
         return e(r.get("industry") or "")
 
     st.html(f'<div class="hm-grid">{"".join(_stock_card(r, extra(r)) for r in rows[:10])}</div>')
-    _open_picker(rows[:10], "mv")
 
 
 def _market_cap(lists: dict) -> None:
@@ -315,12 +359,11 @@ def _market_cap(lists: dict) -> None:
         <td>{_cr(r.get('mcap_cr'))}</td></tr>""" for i, r in enumerate(rows, 1))
     st.html(f'<table class="hm-tbl"><tr><th>Company</th><th>1 month</th><th>Price</th><th>Today</th>'
             f'<th>Market cap</th></tr>{body}</table>')
-    _open_picker(rows, "mc")
 
 
 def _sectors(ov: dict, stocks: list[dict]) -> None:
     rows = [(r["name"], r.get("change_pct")) for r in ov.get("sectors", [])]
-    sub = "NSE sector indices"
+    sub = "sector indices"
     if not rows:
         rows = [(r["industry"], r["change_pct"]) for r in HD.sector_breakdown(stocks)]
         sub = "average move of NIFTY 100 companies per industry"
@@ -347,7 +390,7 @@ def _watchlist(st_data: dict) -> None:
     with st.container(border=True):
         C.subheading("Your watchlist", color="green")
         if not wl:
-            st.caption("Follow companies with ★ Follow on the Screener Data page to see their prices here.")
+            st.caption("No companies in your watchlist yet.")
             return
         by_sym = {r["symbol"]: r for r in st_data["stocks"]}
         html = []
@@ -377,36 +420,81 @@ def _news_box() -> None:
             st.rerun()
 
 
+# ------------------------------------------------------------------ generate box
+def go_to(company_id: int, kind: str) -> None:
+    """Open the Screener data page, or generate an AI report (Plans page first if the user has no access)."""
+    from core import billing
+    from ui.company_view import set_company
+
+    set_company(repo.get_company(company_id))
+    if kind == "data":
+        st.session_state["screener_request"] = company_id
+        st.session_state["nav_request"] = "Screener Data"
+    else:
+        access = billing.access_for(st.session_state["user"]["id"])
+        if not access.can_generate:      # stay on Home and open the plans popup
+            st.session_state["plans_popup"] = access.message if "limit" in access.message.lower() else \
+                "Your free report is used. Choose a plan to generate your next report."
+            st.session_state["nav_request"] = "Home"
+        else:
+            st.session_state["report_request"] = company_id
+            st.session_state["nav_request"] = "AI Analysis Report"
+    st.rerun()
+
+
+def _generate_box() -> None:
+    from ui.company_view import cached_companies
+
+    companies = cached_companies()
+    labels = {c["id"]: f"{c['name']}  ·  {c['nse_symbol'] or c['screener_slug']}" for c in companies}
+    with st.container(border=True):
+        st.html('<div class="gen-title">Generate data and AI analysis report</div>'
+                '<div class="gen-sub">Type a company name, then choose what you want.</div>')
+        cid = st.selectbox("Company", [c["id"] for c in companies], index=None, key="home_company",
+                           format_func=lambda i: labels.get(i, i), label_visibility="collapsed",
+                           placeholder=f"🔍  Type a company name or NSE symbol ({len(companies):,} companies)")
+        a, b = st.columns(2, gap="medium")
+        go_data = a.button("📊  Generate company data", key="gen_data", use_container_width=True, disabled=not cid)
+        go_report = b.button("🤖  Generate AI analysis report", key="gen_report", type="primary",
+                             use_container_width=True, disabled=not cid)
+        if not companies:
+            st.warning("The company list is empty. Open **Profile → System status** and load the NSE list.")
+    if go_data or go_report:
+        go_to(cid, "data" if go_data else "report")
+
+
 # ------------------------------------------------------------------ page
 def render() -> None:
     st.markdown(CSS, unsafe_allow_html=True)
     user = st.session_state.get("user") or {}
-    hour = datetime.now().hour
+    hour = datetime.now(IST).hour
     greet = "Good morning" if hour < 12 else ("Good afternoon" if hour < 17 else "Good evening")
-    a, b = st.columns([5, 1], vertical_alignment="bottom")
-    with a:
-        st.html(f'<div class="hm-hello">{greet}, {e(user.get("full_name") or "")}</div>')
-        C.page_header("Markets today", "Indian stock market at a glance. Pick a company to see its Screener data "
-                      "or generate an AI analysis report.")
-    with b:
-        if st.button("⟳ Refresh", key="hm_refresh", use_container_width=True):
-            for f in (_overview, _stocks, _history, _popular):
-                f.clear()
-            st.rerun()
+    st.html(f'<div class="hm-hello">{greet}, {e(user.get("full_name") or "")}</div>')
+    if st.session_state.get("payment_ok"):
+        st.success(f"Payment received. {st.session_state.pop('payment_ok')} is now active. "
+                   "You can generate your report below.")
+    _generate_box()
+    popup = st.session_state.pop("plans_popup", None)
+    if popup:
+        from ui.plans_view import plans_dialog
 
+        plans_dialog(popup)
+
+    _market_sections()
+
+
+@st.fragment(run_every=REFRESH_SECONDS)
+def _market_sections() -> None:
+    """Everything below the Generate box. Reloads itself every 5 minutes (no button needed)."""
+    st.html('<div class="hm-h" style="margin-top:26px">Markets today'
+            '<small>Indian and world markets · updates every 5 minutes</small></div>')
     with st.spinner("Loading market data…"):
         ov = _overview()
     _index_strip(ov)
     _index_chart(ov)
 
-    extra = tuple(sorted({p["nse_symbol"] for p in _popular() if p.get("nse_symbol")}))
-    uid = user.get("id")
-    try:
-        extra += tuple(w["nse_symbol"] for w in (repo.list_watchlist(uid) if uid else []) if w.get("nse_symbol"))
-    except Exception:  # noqa: BLE001
-        pass
     with st.spinner("Loading companies…"):
-        st_data = _stocks(tuple(sorted(set(extra))))
+        st_data = _stocks(_extra_symbols())
     lists = HD.lists_from(st_data["stocks"], 10)
 
     _popular_section(st_data)
@@ -421,9 +509,7 @@ def render() -> None:
         _watchlist(st_data)
         _news_box()
 
-    srcs = sorted(set(ov.get("sources", []) + st_data.get("sources", [])))
-    st.caption(f"Data: {', '.join(srcs) or '–'} · loaded {ov['as_of'][11:16]} UTC · prices may be delayed. "
-               "Company fundamentals: Screener.in; the AI report also uses Value Research, Yahoo Finance and others. "
-               "For education, not investment advice.")
     for n in ov.get("notes", []) + st_data.get("notes", []):
-        st.caption(n)
+        HD.log.info("home data note: %s", n)
+    st.caption(f"Last updated {datetime.now(IST).strftime('%H:%M')} IST · prices may be delayed by up to 15 minutes · "
+               "for education, not investment advice.")

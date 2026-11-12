@@ -399,8 +399,6 @@ def render_report(report: dict, payload: Optional[dict]) -> None:
     rid = st.session_state.get("report_id")
     comp = report.get("company", {})
     sym = comp.get("nse_symbol") or "company"
-    _export_bar(json.dumps(report, indent=2, default=str, ensure_ascii=False).encode(),
-                f"{sym}_analysis_{rid}.json", lambda: report_pdf_bytes(rid), f"{sym}_analysis_{rid}.pdf")
 
     stance = report.get("stance", "Neutral")
     st.html(f"""<div class="sis-card"><div class="sis-head"><div>
@@ -551,3 +549,79 @@ def render_report_news(report: dict) -> None:
                 C.subheading("Exchange announcements", color="green")
                 C.news_list([{"title": a.get("title"), "url": a.get("url"), "source": "NSE/BSE filing",
                               "published_at": a.get("date")} for a in anns[:8]])
+
+
+# ------------------------------------------------------------------ simple report page (Home -> "AI analysis report")
+_STEPS = [("metric", "Calculating the scorecard…"), ("consisten", "Checking the data…"),
+          ("project", "Projecting the next three years…"), ("looking up", "Filling in missing figures…"),
+          ("other websites", "Verifying the extra figures…"), ("health", "Checking financial health…"),
+          ("narrative", "Writing the report…"), ("fact-check", "Fact-checking the report…")]
+
+
+def _step(msg) -> None:
+    """Show build progress in plain words, without naming data sources or tools."""
+    low = str(msg).lower()
+    st.write(next((text for key, text in _STEPS if key in low), "Working…"))
+
+
+def generate_report(company: dict, payload: dict) -> Optional[int]:
+    """Build, store and charge one report (latest news + other websites). Returns the report id, or None."""
+    access = billing.access_for(_user_id())
+    if not access.can_generate:
+        st.session_state["plans_popup"] = access.message
+        st.session_state["nav_request"] = "Home"
+        st.rerun()
+    with st.status(f"Building the analysis report for {company['name']}…", expanded=True) as status:
+        st.write("Collecting the latest news…")
+        try:
+            news = refresh_news(company)
+            st.session_state["news"] = news
+        except Exception as e:  # noqa: BLE001
+            news = st.session_state.get("news") or repo.list_news(company["id"])
+            st.write(f"News unavailable: {e}")
+        report = build_report(payload, news, use_external=get_settings().external_enabled, progress=_step)
+        rid = repo.save_report(company["id"], st.session_state.get("run_id"), _user_id(), report)
+        st.session_state["report"], st.session_state["report_id"] = report, rid
+        charged = not report.get("llm_error")      # AI busy -> rule-based text, and the report is not charged
+        if charged:
+            try:
+                billing.consume(_user_id(), rid, access.source)
+            except billing.BillingError as ex:
+                st.write(str(ex))
+        repo.log_activity(_user_id(), company["id"],
+                          f"Generated analysis report #{rid}: {report['stance']} ({report['score']:.0f}/100)")
+        status.update(label="Report ready", state="complete", expanded=False)
+    if not charged:
+        st.info("Our AI writer was very busy, so this report uses standard text for the written parts. "
+                "All numbers, scores and projections are complete. This report was not counted against your "
+                "plan or free report. Try again in a few minutes for the full AI text.")
+    sync_company_async(company["id"])
+    return rid
+
+
+def render_report_page(company: dict, payload: dict) -> None:
+    """Heading, PDF download at the top right, then the report. Generates a new report once per button click."""
+    if st.session_state.pop("report_request", None) == company["id"]:
+        generate_report(company, payload)
+    report = st.session_state.get("report")
+    rid = st.session_state.get("report_id")
+    if not report or (report.get("company") or {}).get("nse_symbol") not in (None, company.get("nse_symbol")):
+        C.empty_state("No report yet", "Go back to Home, choose the company and press "
+                      "“Generate AI analysis report”.")
+        return
+    sym = (report.get("company") or {}).get("nse_symbol") or company.get("nse_symbol") or "company"
+    a, b = st.columns([5, 1.4], vertical_alignment="center")
+    with a:
+        st.html(f'<div class="vr-report-title">{H.e(company["name"])} · AI Analysis Report</div>'
+                f'<div style="color:#595959;font-size:.85rem">Consolidated figures · generated '
+                f'{H.e(str(report.get("generated_at"))[:16].replace("T", " "))}</div>')
+    with b:
+        try:
+            pdf = report_pdf_bytes(rid) if rid else None
+        except Exception as ex:  # noqa: BLE001
+            pdf = None
+            st.caption(f"PDF could not be built: {ex}")
+        if pdf:
+            st.download_button("⤓ Export PDF", pdf, file_name=f"{sym}_analysis_{rid}.pdf", mime="application/pdf",
+                               type="primary", use_container_width=True, key="dl_report_pdf_top")
+    render_report(report, payload)

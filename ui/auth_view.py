@@ -8,9 +8,9 @@ from core.auth import (AuthError, add_mobile, complete_registration, complete_re
 from core.config import APP_NAME, get_settings
 
 FEATURES = [
-    ("1", "Screener data, stored", "Results, P&L, balance sheet, cash flow, ratios, peers and shareholding for any NSE company."),
-    ("2", "Missing figures filled", "Ratios Screener does not show, from Yahoo Finance and Value Research, with sources."),
-    ("3", "Broker-style reports", "Scorecard, three-year projections, peers and news from NSE, BSE and 11 news websites."),
+    ("1", "Complete company data", "Results, P&L, balance sheet, cash flow, ratios, peers and shareholding for any listed Indian company."),
+    ("2", "Nothing missing", "Key ratios and figures gathered and checked for you, in one place."),
+    ("3", "Broker-style reports", "Scorecard, three-year projections, peers and the latest news, in a ready PDF."),
     ("4", "Your first report is free", "Then pay per report or choose a monthly or yearly plan."),
 ]
 

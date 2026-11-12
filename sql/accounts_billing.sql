@@ -57,6 +57,7 @@ create table if not exists public.payments (
     paid_at              timestamptz,
     applied              boolean not null default false  -- plan/credit already given to the user
 );
+alter table public.payments add column if not exists callback_login_used boolean not null default false;
 create index if not exists ix_payments_user on public.payments (user_id, created_at desc);
 
 -- ---------- Which access paid for each report ----------

@@ -211,6 +211,18 @@ def apply_from_callback(params: dict) -> Optional[dict]:
     return db.fetch_one("select * from payments where id = %s", (pay["id"],))
 
 
+def login_from_callback(payment_id: int) -> Optional[dict]:
+    """After a verified, paid Razorpay redirect, sign the payer in on that tab: once per payment, within 2 hours.
+    Returns the profile row, or None."""
+    row = db.fetch_one("""update payments set callback_login_used = true
+                          where id = %s and status = 'paid' and applied and not callback_login_used
+                            and paid_at > now() - interval '2 hours'
+                          returning user_id""", (payment_id,))
+    if not row:
+        return None
+    return db.fetch_one("select * from profiles where id = %s", (row["user_id"],))
+
+
 def pending_payments(user_id: str) -> list[dict]:
     return db.fetch_all("""select * from payments where user_id = %s and status = 'created'
                            and created_at > now() - interval '1 day' order by created_at desc""", (user_id,))

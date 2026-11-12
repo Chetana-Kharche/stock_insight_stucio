@@ -85,12 +85,13 @@ def _generate(client, contents, config):
     models = [_auto_model or s.gemini_model] + ([s.gemini_fallback_model] if s.gemini_fallback_model else [])
     tried: list[str] = []
     last_err: Optional[Exception] = None
+    busy_switched = False
     while models:
         model = models.pop(0)
         if not model or model in tried:
             continue
         tried.append(model)
-        for attempt, wait in enumerate((0, 3, 8)):
+        for attempt, wait in enumerate((0, 4, 10)):
             if wait:
                 time.sleep(wait)
             try:
@@ -110,6 +111,14 @@ def _generate(client, contents, config):
                 if not any(k in low for k in RETRYABLE):
                     raise
                 log.warning("Gemini %s busy (attempt %d): %s", model, attempt + 1, str(e)[:120])
+        if not models and not busy_switched and last_err is not None \
+                and any(k in str(last_err).lower() for k in RETRYABLE):
+            # every configured model is busy: try one other available Gemini model before giving up
+            busy_switched = True
+            alt = pick_available_model(client, exclude=tuple(tried))
+            if alt:
+                log.warning("Gemini busy on %s; trying %s", ", ".join(tried), alt)
+                models.append(alt)
     raise last_err  # type: ignore[misc]
 
 
