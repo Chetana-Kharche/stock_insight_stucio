@@ -437,7 +437,7 @@ def _news_box() -> None:
             C.news_list(items)
         else:
             st.caption("Headlines are not available right now.")
-        if st.button("All market news →", key="hm_news", use_container_width=True):
+        if st.button("All market news →", key="hm_news_all", use_container_width=True):
             st.session_state["nav_request"] = "Market News"
             st.rerun()
 
