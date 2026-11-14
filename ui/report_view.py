@@ -558,10 +558,24 @@ _STEPS = [("metric", "Calculating the scorecard…"), ("consisten", "Checking th
           ("narrative", "Writing the report…"), ("fact-check", "Fact-checking the report…")]
 
 
-def _step(msg) -> None:
-    """Show build progress in plain words, without naming data sources or tools."""
-    low = str(msg).lower()
-    st.write(next((text for key, text in _STEPS if key in low), "Working…"))
+class _Progress:
+    """One progress bar and one line of text that is replaced at every step (no growing list)."""
+    TOTAL = len(_STEPS) + 2          # news first, the steps of the report, then saving
+
+    def __init__(self) -> None:
+        self.bar = st.progress(0.0)
+        self.line = st.empty()
+        self.n = 0
+
+    def show(self, text: str) -> None:
+        self.n = min(self.n + 1, self.TOTAL)
+        self.bar.progress(self.n / self.TOTAL)
+        self.line.caption(text)
+
+    def step(self, msg) -> None:
+        """Called by the report builder; shows the step in plain words, without naming sources or tools."""
+        low = str(msg).lower()
+        self.show(next((text for key, text in _STEPS if key in low), "Working…"))
 
 
 def generate_report(company: dict, payload: dict) -> Optional[int]:
@@ -572,24 +586,27 @@ def generate_report(company: dict, payload: dict) -> Optional[int]:
         st.session_state["nav_request"] = "Home"
         st.rerun()
     with st.status(f"Building the analysis report for {company['name']}…", expanded=True) as status:
-        st.write("Collecting the latest news…")
+        prog = _Progress()
+        prog.show("Collecting the latest news…")
         try:
             news = refresh_news(company)
             st.session_state["news"] = news
-        except Exception as e:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             news = st.session_state.get("news") or repo.list_news(company["id"])
-            st.write(f"News unavailable: {e}")
-        report = build_report(payload, news, use_external=get_settings().external_enabled, progress=_step)
+        report = build_report(payload, news, use_external=get_settings().external_enabled, progress=prog.step)
+        prog.show("Saving your report…")
         rid = repo.save_report(company["id"], st.session_state.get("run_id"), _user_id(), report)
         st.session_state["report"], st.session_state["report_id"] = report, rid
         charged = not report.get("llm_error")      # AI busy -> rule-based text, and the report is not charged
         if charged:
             try:
                 billing.consume(_user_id(), rid, access.source)
-            except billing.BillingError as ex:
-                st.write(str(ex))
+            except billing.BillingError:
+                pass
         repo.log_activity(_user_id(), company["id"],
                           f"Generated analysis report #{rid}: {report['stance']} ({report['score']:.0f}/100)")
+        prog.bar.progress(1.0)
+        prog.line.caption("Done")
         status.update(label="Report ready", state="complete", expanded=False)
     if not charged:
         st.info("Our AI writer was very busy, so this report uses standard text for the written parts. "
